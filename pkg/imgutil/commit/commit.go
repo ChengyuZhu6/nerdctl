@@ -43,6 +43,8 @@ import (
 	"github.com/containerd/errdefs"
 	"github.com/containerd/log"
 	"github.com/containerd/platforms"
+	"github.com/containerd/stargz-snapshotter/estargz"
+	estargzconvert "github.com/containerd/stargz-snapshotter/nativeconverter/estargz"
 
 	"github.com/containerd/nerdctl/v2/pkg/api/types"
 	"github.com/containerd/nerdctl/v2/pkg/clientutil"
@@ -57,12 +59,16 @@ type Changes struct {
 }
 
 type Opts struct {
-	Author      string
-	Message     string
-	Ref         string
-	Pause       bool
-	Changes     Changes
-	Compression types.CompressionType
+	Author                  string
+	Message                 string
+	Ref                     string
+	Pause                   bool
+	Changes                 Changes
+	Compression             types.CompressionType
+	Estargz                 bool
+	EstargzCompressionLevel int
+	EstargzChunkSize        int
+	EstargzMinChunkSize     int
 }
 
 var (
@@ -177,7 +183,7 @@ func Commit(ctx context.Context, client *containerd.Client, container containerd
 	// Sync filesystem to make sure that all the data writes in container could be persisted to disk.
 	Sync()
 
-	diffLayerDesc, diffID, err := createDiff(ctx, id, sn, client.ContentStore(), differ, opts.Compression)
+	diffLayerDesc, diffID, err := createDiff(ctx, id, sn, client.ContentStore(), differ, opts.Compression, opts)
 	if err != nil {
 		return emptyDigest, fmt.Errorf("failed to export layer: %w", err)
 	}
@@ -305,7 +311,6 @@ func writeContentsForImage(ctx context.Context, snName string, baseImg container
 		return ocispec.Descriptor{}, emptyDigest, err
 	}
 	layers := append(baseMfst.Layers, diffLayerDesc)
-
 	newMfst := struct {
 		MediaType string `json:"mediaType,omitempty"`
 		ocispec.Manifest
@@ -319,7 +324,6 @@ func writeContentsForImage(ctx context.Context, snName string, baseImg container
 			Layers: layers,
 		},
 	}
-
 	newMfstJSON, err := json.MarshalIndent(newMfst, "", "    ")
 	if err != nil {
 		return ocispec.Descriptor{}, emptyDigest, err
@@ -357,14 +361,18 @@ func writeContentsForImage(ctx context.Context, snName string, baseImg container
 }
 
 // createDiff creates a layer diff into containerd's content store.
-func createDiff(ctx context.Context, name string, sn snapshots.Snapshotter, cs content.Store, comparer diff.Comparer, compression types.CompressionType) (ocispec.Descriptor, digest.Digest, error) {
-	opts := make([]diff.Opt, 0)
+func createDiff(ctx context.Context, name string, sn snapshots.Snapshotter, cs content.Store, comparer diff.Comparer, compression types.CompressionType, opts *Opts) (ocispec.Descriptor, digest.Digest, error) {
+	diffOpts := make([]diff.Opt, 0)
 	mediaType := images.MediaTypeDockerSchema2LayerGzip
 	if compression == types.Zstd {
-		opts = append(opts, diff.WithMediaType(ocispec.MediaTypeImageLayerZstd))
+		diffOpts = append(diffOpts, diff.WithMediaType(ocispec.MediaTypeImageLayerZstd))
 		mediaType = images.MediaTypeDockerSchema2LayerZstd
 	}
-	newDesc, err := rootfs.CreateDiff(ctx, name, sn, comparer, opts...)
+	if opts.Estargz {
+		diffOpts = append(diffOpts, diff.WithMediaType(ocispec.MediaTypeImageLayerGzip))
+		mediaType = ocispec.MediaTypeImageLayerGzip
+	}
+	newDesc, err := rootfs.CreateDiff(ctx, name, sn, comparer, diffOpts...)
 	if err != nil {
 		return ocispec.Descriptor{}, digest.Digest(""), err
 	}
@@ -382,6 +390,50 @@ func createDiff(ctx context.Context, name string, sn snapshots.Snapshotter, cs c
 	diffID, err := digest.Parse(diffIDStr)
 	if err != nil {
 		return ocispec.Descriptor{}, digest.Digest(""), err
+	}
+
+	// Convert to eStargz if requested
+	if opts.Estargz {
+		log.G(ctx).Infof("Converting diff layer to eStargz format")
+
+		esgzOpts := []estargz.Option{
+			estargz.WithCompressionLevel(opts.EstargzCompressionLevel),
+		}
+		if opts.EstargzChunkSize > 0 {
+			esgzOpts = append(esgzOpts, estargz.WithChunkSize(opts.EstargzChunkSize))
+		}
+		if opts.EstargzMinChunkSize > 0 {
+			esgzOpts = append(esgzOpts, estargz.WithMinChunkSize(opts.EstargzMinChunkSize))
+		}
+
+		convertFunc := estargzconvert.LayerConvertFunc(esgzOpts...)
+
+		esgzDesc, err := convertFunc(ctx, cs, newDesc)
+		if err != nil {
+			log.G(ctx).Warnf("Failed to convert diff layer to eStargz: %v", err)
+		} else if esgzDesc != nil {
+			esgzDesc.MediaType = mediaType
+			esgzInfo, err := cs.Info(ctx, esgzDesc.Digest)
+			if err != nil {
+				return ocispec.Descriptor{}, digest.Digest(""), err
+			}
+
+			esgzDiffIDStr, ok := esgzInfo.Labels["containerd.io/uncompressed"]
+			if !ok {
+				return ocispec.Descriptor{}, digest.Digest(""), fmt.Errorf("invalid differ response with no diffID")
+			}
+
+			esgzDiffID, err := digest.Parse(esgzDiffIDStr)
+			if err != nil {
+				return ocispec.Descriptor{}, digest.Digest(""), err
+			}
+			return ocispec.Descriptor{
+				MediaType:   esgzDesc.MediaType,
+				Digest:      esgzDesc.Digest,
+				Size:        esgzDesc.Size,
+				Annotations: esgzDesc.Annotations,
+			}, esgzDiffID, nil
+		}
 	}
 
 	return ocispec.Descriptor{

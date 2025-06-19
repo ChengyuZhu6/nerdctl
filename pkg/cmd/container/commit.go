@@ -31,7 +31,7 @@ import (
 	"github.com/containerd/nerdctl/v2/pkg/referenceutil"
 )
 
-// Commit will commit a container’s file changes or settings into a new image.
+// Commit will commit a container's file changes or settings into a new image.
 func Commit(ctx context.Context, client *containerd.Client, rawRef string, req string, options types.ContainerCommitOptions) error {
 	parsedReference, err := referenceutil.Parse(rawRef)
 	if err != nil {
@@ -44,12 +44,16 @@ func Commit(ctx context.Context, client *containerd.Client, rawRef string, req s
 	}
 
 	opts := &commit.Opts{
-		Author:      options.Author,
-		Message:     options.Message,
-		Ref:         parsedReference.String(),
-		Pause:       options.Pause,
-		Changes:     changes,
-		Compression: options.Compression,
+		Author:                  options.Author,
+		Message:                 options.Message,
+		Ref:                     parsedReference.String(),
+		Pause:                   options.Pause,
+		Changes:                 changes,
+		Compression:             options.Compression,
+		Estargz:                 options.Estargz,
+		EstargzCompressionLevel: options.EstargzCompressionLevel,
+		EstargzChunkSize:        options.EstargzChunkSize,
+		EstargzMinChunkSize:     options.EstargzMinChunkSize,
 	}
 
 	walker := &containerwalker.ContainerWalker{

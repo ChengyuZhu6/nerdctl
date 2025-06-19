@@ -140,7 +140,7 @@ type ContainerCreateOptions struct {
 	OomKillDisable bool
 	// OomScoreAdjChanged specifies whether the OOM preferences has been changed
 	OomScoreAdjChanged bool
-	// OomScoreAdj specifies the tune container’s OOM preferences (-1000 to 1000, rootless: 100 to 1000)
+	// OomScoreAdj specifies the tune container's OOM preferences (-1000 to 1000, rootless: 100 to 1000)
 	OomScoreAdj int
 	// PidsLimit specifies the tune container pids limit
 	PidsLimit int64
@@ -385,6 +385,14 @@ type ContainerCommitOptions struct {
 	Pause bool
 	// Compression is set commit compression algorithm
 	Compression CompressionType
+	// Estargz convert the committed layer to eStargz for lazy pulling
+	Estargz bool
+	// EstargzCompressionLevel eStargz compression level
+	EstargzCompressionLevel int
+	// EstargzChunkSize eStargz chunk size
+	EstargzChunkSize int
+	// EstargzMinChunkSize the minimal number of bytes of data must be written in one gzip stream
+	EstargzMinChunkSize int
 }
 
 type CompressionType string

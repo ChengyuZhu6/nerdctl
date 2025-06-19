@@ -43,6 +43,10 @@ func CommitCommand() *cobra.Command {
 	cmd.Flags().StringArrayP("change", "c", nil, "Apply Dockerfile instruction to the created image (supported directives: [CMD, ENTRYPOINT])")
 	cmd.Flags().BoolP("pause", "p", true, "Pause container during commit")
 	cmd.Flags().StringP("compression", "", "gzip", "commit compression algorithm (zstd or gzip)")
+	cmd.Flags().Bool("estargz", false, "Convert the committed layer to eStargz for lazy pulling")
+	cmd.Flags().Int("estargz-compression-level", 9, "eStargz compression level (1-9)")
+	cmd.Flags().Int("estargz-chunk-size", 0, "eStargz chunk size")
+	cmd.Flags().Int("estargz-min-chunk-size", 0, "The minimal number of bytes of data must be written in one gzip stream")
 	return cmd
 }
 
@@ -76,14 +80,36 @@ func commitOptions(cmd *cobra.Command) (types.ContainerCommitOptions, error) {
 	if com != string(types.Zstd) && com != string(types.Gzip) {
 		return types.ContainerCommitOptions{}, errors.New("--compression param only supports zstd or gzip")
 	}
+
+	estargz, err := cmd.Flags().GetBool("estargz")
+	if err != nil {
+		return types.ContainerCommitOptions{}, err
+	}
+	estargzCompressionLevel, err := cmd.Flags().GetInt("estargz-compression-level")
+	if err != nil {
+		return types.ContainerCommitOptions{}, err
+	}
+	estargzChunkSize, err := cmd.Flags().GetInt("estargz-chunk-size")
+	if err != nil {
+		return types.ContainerCommitOptions{}, err
+	}
+	estargzMinChunkSize, err := cmd.Flags().GetInt("estargz-min-chunk-size")
+	if err != nil {
+		return types.ContainerCommitOptions{}, err
+	}
+
 	return types.ContainerCommitOptions{
-		Stdout:      cmd.OutOrStdout(),
-		GOptions:    globalOptions,
-		Author:      author,
-		Message:     message,
-		Pause:       pause,
-		Change:      change,
-		Compression: types.CompressionType(com),
+		Stdout:                  cmd.OutOrStdout(),
+		GOptions:                globalOptions,
+		Author:                  author,
+		Message:                 message,
+		Pause:                   pause,
+		Change:                  change,
+		Compression:             types.CompressionType(com),
+		Estargz:                 estargz,
+		EstargzCompressionLevel: estargzCompressionLevel,
+		EstargzChunkSize:        estargzChunkSize,
+		EstargzMinChunkSize:     estargzMinChunkSize,
 	}, nil
 }
 
