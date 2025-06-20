@@ -32,6 +32,7 @@ func CommitCommand() *cobra.Command {
 	var cmd = &cobra.Command{
 		Use:               "commit [flags] CONTAINER REPOSITORY[:TAG]",
 		Short:             "Create a new image from a container's changes",
+		Long:              "Create a new image from a container's changes. Use --format to choose between docker (default) or oci image format.",
 		Args:              helpers.IsExactArgs(2),
 		RunE:              commitAction,
 		ValidArgsFunction: commitShellComplete,
@@ -43,10 +44,14 @@ func CommitCommand() *cobra.Command {
 	cmd.Flags().StringArrayP("change", "c", nil, "Apply Dockerfile instruction to the created image (supported directives: [CMD, ENTRYPOINT])")
 	cmd.Flags().BoolP("pause", "p", true, "Pause container during commit")
 	cmd.Flags().StringP("compression", "", "gzip", "commit compression algorithm (zstd or gzip)")
+	cmd.Flags().String("format", "docker", "Format of the committed image (docker or oci)")
 	cmd.Flags().Bool("estargz", false, "Convert the committed layer to eStargz for lazy pulling")
 	cmd.Flags().Int("estargz-compression-level", 9, "eStargz compression level (1-9)")
 	cmd.Flags().Int("estargz-chunk-size", 0, "eStargz chunk size")
 	cmd.Flags().Int("estargz-min-chunk-size", 0, "The minimal number of bytes of data must be written in one gzip stream")
+	cmd.RegisterFlagCompletionFunc("format", func(cmd *cobra.Command, args []string, toComplete string) ([]string, cobra.ShellCompDirective) {
+		return []string{"docker", "oci"}, cobra.ShellCompDirectiveNoFileComp
+	})
 	return cmd
 }
 
@@ -98,6 +103,14 @@ func commitOptions(cmd *cobra.Command) (types.ContainerCommitOptions, error) {
 		return types.ContainerCommitOptions{}, err
 	}
 
+	format, err := cmd.Flags().GetString("format")
+	if err != nil {
+		return types.ContainerCommitOptions{}, err
+	}
+	if format != string(types.MediaTypeDocker) && format != string(types.MediaTypeOCI) {
+		return types.ContainerCommitOptions{}, errors.New("--format param only supports docker or oci")
+	}
+
 	return types.ContainerCommitOptions{
 		Stdout:                  cmd.OutOrStdout(),
 		GOptions:                globalOptions,
@@ -106,6 +119,7 @@ func commitOptions(cmd *cobra.Command) (types.ContainerCommitOptions, error) {
 		Pause:                   pause,
 		Change:                  change,
 		Compression:             types.CompressionType(com),
+		MediaType:               types.MediaTypeFormat(format),
 		Estargz:                 estargz,
 		EstargzCompressionLevel: estargzCompressionLevel,
 		EstargzChunkSize:        estargzChunkSize,
