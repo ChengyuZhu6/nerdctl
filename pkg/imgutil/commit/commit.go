@@ -43,6 +43,8 @@ import (
 	"github.com/containerd/errdefs"
 	"github.com/containerd/log"
 	"github.com/containerd/platforms"
+	"github.com/containerd/stargz-snapshotter/estargz"
+	estargzconvert "github.com/containerd/stargz-snapshotter/nativeconverter/estargz"
 
 	"github.com/containerd/nerdctl/v2/pkg/api/types"
 	"github.com/containerd/nerdctl/v2/pkg/clientutil"
@@ -57,13 +59,17 @@ type Changes struct {
 }
 
 type Opts struct {
-	Author      string
-	Message     string
-	Ref         string
-	Pause       bool
-	Changes     Changes
-	Compression types.CompressionType
-	Format      types.ImageFormat
+	Author                  string
+	Message                 string
+	Ref                     string
+	Pause                   bool
+	Changes                 Changes
+	Compression             types.CompressionType
+	Format                  types.ImageFormat
+	Estargz                 bool
+	EstargzCompressionLevel int
+	EstargzChunkSize        int
+	EstargzMinChunkSize     int
 }
 
 var (
@@ -429,6 +435,50 @@ func createDiff(ctx context.Context, name string, sn snapshots.Snapshotter, cs c
 	diffID, err := digest.Parse(diffIDStr)
 	if err != nil {
 		return ocispec.Descriptor{}, digest.Digest(""), err
+	}
+
+	// Convert to eStargz if requested
+	if opts.Estargz {
+		log.G(ctx).Infof("Converting diff layer to eStargz format")
+
+		esgzOpts := []estargz.Option{
+			estargz.WithCompressionLevel(opts.EstargzCompressionLevel),
+		}
+		if opts.EstargzChunkSize > 0 {
+			esgzOpts = append(esgzOpts, estargz.WithChunkSize(opts.EstargzChunkSize))
+		}
+		if opts.EstargzMinChunkSize > 0 {
+			esgzOpts = append(esgzOpts, estargz.WithMinChunkSize(opts.EstargzMinChunkSize))
+		}
+
+		convertFunc := estargzconvert.LayerConvertFunc(esgzOpts...)
+
+		esgzDesc, err := convertFunc(ctx, cs, newDesc)
+		if err != nil {
+			log.G(ctx).Warnf("Failed to convert diff layer to eStargz: %v", err)
+		} else if esgzDesc != nil {
+			esgzDesc.MediaType = mediaType
+			esgzInfo, err := cs.Info(ctx, esgzDesc.Digest)
+			if err != nil {
+				return ocispec.Descriptor{}, digest.Digest(""), err
+			}
+
+			esgzDiffIDStr, ok := esgzInfo.Labels["containerd.io/uncompressed"]
+			if !ok {
+				return ocispec.Descriptor{}, digest.Digest(""), fmt.Errorf("invalid differ response with no diffID")
+			}
+
+			esgzDiffID, err := digest.Parse(esgzDiffIDStr)
+			if err != nil {
+				return ocispec.Descriptor{}, digest.Digest(""), err
+			}
+			return ocispec.Descriptor{
+				MediaType:   esgzDesc.MediaType,
+				Digest:      esgzDesc.Digest,
+				Size:        esgzDesc.Size,
+				Annotations: esgzDesc.Annotations,
+			}, esgzDiffID, nil
+		}
 	}
 
 	return ocispec.Descriptor{
