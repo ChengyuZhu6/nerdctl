@@ -22,6 +22,7 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"os"
 	"path"
 	"path/filepath"
 	"strconv"
@@ -275,7 +276,29 @@ func Start(ctx context.Context, container containerd.Container, flagA bool, flag
 		// source: https://github.com/containerd/nerdctl/blob/main/docs/command-reference.md#whale-nerdctl-start
 		attachStreamOpt = []string{"STDOUT", "STDERR"}
 	}
-	task, err := taskutil.NewTask(ctx, client, container, attachStreamOpt, flagI, flagT, true, con, logURI, detachKeys, namespace, detachC)
+	var task containerd.Task
+	if flagA {
+		// Use multi-session IO when attaching to enable IO sharing
+		var stdin io.Reader
+		var stdout, stderr io.Writer = os.Stdout, os.Stderr
+
+		if flagI && flagT {
+			stdin = con
+		} else if flagI {
+			stdin = os.Stdin
+		}
+
+		if flagT {
+			stdout = con
+			stderr = nil // TTY mode combines stdout and stderr
+		}
+
+		task, err = taskutil.NewTaskWithMultiSession(ctx, client, container, attachStreamOpt, flagI, flagT, true, con, logURI, detachKeys, namespace, detachC, stdin, stdout, stderr)
+	} else {
+		// Use standard task creation for non-attach mode
+		task, err = taskutil.NewTask(ctx, client, container, attachStreamOpt, flagI, flagT, true, con, logURI, detachKeys, namespace, detachC)
+	}
+
 	if err != nil {
 		return err
 	}

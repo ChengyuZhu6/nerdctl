@@ -247,3 +247,109 @@ func (s *StdinCloser) Close() error {
 	s.closed = true
 	return nil
 }
+
+// NewTaskWithMultiSession creates a new task with multi-session IO support.
+// This enables multiple clients to attach to the same container and share IO streams.
+func NewTaskWithMultiSession(ctx context.Context, client *containerd.Client, container containerd.Container,
+	attachStreamOpt []string, flagI, flagT, flagD bool, con console.Console, logURI, detachKeys, namespace string,
+	detachC chan<- struct{}, stdin io.Reader, stdout, stderr io.Writer) (containerd.Task, error) {
+
+	var t containerd.Task
+	closer := func() {
+		if detachC != nil {
+			detachC <- struct{}{}
+		}
+		io := t.IO()
+		if io == nil {
+			log.G(ctx).Errorf("got a nil io")
+			return
+		}
+		io.Cancel()
+	}
+
+	var ioCreator cio.Creator
+	if len(attachStreamOpt) != 0 {
+		log.G(ctx).Debug("attaching output with multi-session support")
+		// Use multi-session container IO
+		ioCreator = cioutil.NewMultiSessionContainerIO(container.ID(), namespace, logURI, flagT, stdin, stdout, stderr)
+	} else if flagT && flagD {
+		// Handle TTY + detached mode with logging (similar to existing logic)
+		u, err := url.Parse(logURI)
+		if err != nil {
+			return nil, err
+		}
+
+		var args []string
+		for k, vs := range u.Query() {
+			args = append(args, k)
+			if len(vs) > 0 {
+				args = append(args, vs[0])
+			}
+		}
+
+		if len(args) != 2 {
+			return nil, errors.New("parse logging path error")
+		}
+		parsedPath := u.Path
+		if (runtime.GOOS == "windows") && (strings.HasPrefix(parsedPath, "/")) {
+			parsedPath = strings.TrimLeft(parsedPath, "/")
+		}
+		ioCreator = cio.TerminalBinaryIO(parsedPath, map[string]string{
+			args[0]: args[1],
+		})
+	} else if flagT && !flagD {
+		// Handle TTY without detach
+		if con == nil {
+			return nil, errors.New("got nil con with flagT=true")
+		}
+		var in io.Reader
+		if flagI {
+			if runtime.GOOS != "windows" && !term.IsTerminal(0) {
+				return nil, errors.New("the input device is not a TTY")
+			}
+			var err error
+			in, err = consoleutil.NewDetachableStdin(con, detachKeys, closer)
+			if err != nil {
+				return nil, err
+			}
+		}
+		// Use multi-session container IO for TTY mode
+		ioCreator = cioutil.NewMultiSessionContainerIO(container.ID(), namespace, logURI, flagT, in, stdout, stderr)
+	} else if flagD && logURI != "" && logURI != "none" {
+		// Handle detached mode with logging
+		u, err := url.Parse(logURI)
+		if err != nil {
+			return nil, err
+		}
+		ioCreator = cio.LogURI(u)
+	} else {
+		// Handle non-TTY mode
+		var in io.Reader
+		if flagI {
+			if sv, err := infoutil.ServerSemVer(ctx, client); err != nil {
+				log.G(ctx).Warn(err)
+			} else if sv.LessThan(semver.MustParse("1.6.0-0")) {
+				log.G(ctx).Warnf("`nerdctl (run|exec) -i` without `-t` expects containerd 1.6 or later, got containerd %v", sv)
+			}
+			var stdinC io.ReadCloser = &StdinCloser{
+				Stdin: os.Stdin,
+				Closer: func() {
+					if t, err := container.Task(ctx, nil); err != nil {
+						log.G(ctx).WithError(err).Debugf("failed to get task for StdinCloser")
+					} else {
+						t.CloseIO(ctx, containerd.WithStdinCloser)
+					}
+				},
+			}
+			in = stdinC
+		}
+		// Use multi-session container IO for non-TTY mode
+		ioCreator = cioutil.NewMultiSessionContainerIO(container.ID(), namespace, logURI, flagT, in, stdout, stderr)
+	}
+
+	t, err := container.NewTask(ctx, ioCreator)
+	if err != nil {
+		return nil, err
+	}
+	return t, nil
+}
