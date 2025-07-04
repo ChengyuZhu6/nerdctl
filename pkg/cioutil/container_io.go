@@ -32,8 +32,6 @@ import (
 	"github.com/containerd/containerd/v2/cmd/containerd-shim-runc-v2/process"
 	"github.com/containerd/containerd/v2/defaults"
 	"github.com/containerd/containerd/v2/pkg/cio"
-
-	"github.com/containerd/nerdctl/v2/pkg/streamutil"
 )
 
 const binaryIOProcTermTimeout = 12 * time.Second // Give logger process 10 seconds for cleanup
@@ -219,99 +217,5 @@ func NewContainerIO(namespace string, logURI string, tty bool, stdin io.Reader, 
 			fifos.Stderr = ""
 		}
 		return copyIO(cmd, fifos, streams)
-	}
-}
-
-// NewMultiSessionContainerIO creates a container IO creator that supports multi-session IO sharing.
-// This enables multiple clients (like start -a and attach) to share the same container's IO streams.
-func NewMultiSessionContainerIO(containerID, namespace string, logURI string, tty bool, stdin io.Reader, stdout, stderr io.Writer) cio.Creator {
-	return func(id string) (_ cio.IO, err error) {
-		manager := streamutil.GetGlobalManager()
-
-		// Get or create the stream config for this container
-		streamConfig := manager.GetOrCreateStreamConfig(containerID, namespace, tty)
-
-		// Attach this client to the stream config
-		clientStreams, err := streamConfig.AttachClient(stdin, stdout, stderr)
-		if err != nil {
-			return nil, fmt.Errorf("failed to attach client to stream config: %w", err)
-		}
-
-		// Create the standard container IO for containerd that will be bridged with our stream config
-		// We pass nil for stdin/stdout/stderr since they will be handled by the stream config
-		standardIO, err := NewContainerIO(namespace, logURI, tty, nil, nil, nil)(id)
-		if err != nil {
-			clientStreams.Close()
-			return nil, fmt.Errorf("failed to create standard container IO: %w", err)
-		}
-
-		// Create a wrapper that manages both the standard IO and the multi-session streams
-		wrapper := &MultiSessionIOWrapper{
-			standardIO:    standardIO,
-			streamConfig:  streamConfig,
-			clientStreams: clientStreams,
-			containerID:   containerID,
-		}
-
-		return wrapper, nil
-	}
-}
-
-// MultiSessionIOWrapper wraps standard container IO and adds multi-session support
-type MultiSessionIOWrapper struct {
-	standardIO    cio.IO
-	streamConfig  *streamutil.StreamConfig
-	clientStreams *streamutil.ClientStreams
-	containerID   string
-	bridgeOnce    sync.Once
-}
-
-// Config returns the IO configuration
-func (w *MultiSessionIOWrapper) Config() cio.Config {
-	return w.standardIO.Config()
-}
-
-// Cancel cancels the IO operations
-func (w *MultiSessionIOWrapper) Cancel() {
-	w.standardIO.Cancel()
-}
-
-// Wait waits for IO operations to complete
-func (w *MultiSessionIOWrapper) Wait() {
-	// Establish bridge on first Wait call (when DirectIO is ready)
-	w.bridgeOnce.Do(func() {
-		w.establishBridge()
-	})
-
-	w.standardIO.Wait()
-}
-
-// Close closes the IO and cleans up multi-session resources
-func (w *MultiSessionIOWrapper) Close() error {
-	var lastErr error
-
-	// Close client streams first
-	if err := w.clientStreams.Close(); err != nil {
-		lastErr = err
-	}
-
-	// Close standard IO
-	if err := w.standardIO.Close(); err != nil {
-		lastErr = err
-	}
-
-	return lastErr
-}
-
-// establishBridge creates the bridge between containerd DirectIO and our StreamConfig
-func (w *MultiSessionIOWrapper) establishBridge() {
-	// Try to extract DirectIO from the standard IO wrapper
-	if directIOAccess, ok := w.standardIO.(interface {
-		DirectIO() *cio.DirectIO
-	}); ok {
-		if directIO := directIOAccess.DirectIO(); directIO != nil {
-			// Establish the bridge with DirectIO
-			w.streamConfig.CopyToPipe(directIO)
-		}
 	}
 }

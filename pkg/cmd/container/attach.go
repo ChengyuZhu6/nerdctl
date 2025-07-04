@@ -18,6 +18,7 @@ package container
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"io"
 
@@ -25,6 +26,7 @@ import (
 
 	"github.com/containerd/console"
 	containerd "github.com/containerd/containerd/v2/client"
+	"github.com/containerd/containerd/v2/pkg/cio"
 	"github.com/containerd/log"
 
 	"github.com/containerd/nerdctl/v2/pkg/api/types"
@@ -34,7 +36,6 @@ import (
 	"github.com/containerd/nerdctl/v2/pkg/idutil/containerwalker"
 	"github.com/containerd/nerdctl/v2/pkg/labels"
 	"github.com/containerd/nerdctl/v2/pkg/signalutil"
-	"github.com/containerd/nerdctl/v2/pkg/streamutil"
 )
 
 // Attach attaches stdin, stdout, and stderr to a running container.
@@ -78,104 +79,96 @@ func Attach(ctx context.Context, client *containerd.Client, req string, options 
 		}
 	}()
 
-	// Get container spec to determine TTY mode
+	// Attach to the container.
+	var task containerd.Task
+	detachC := make(chan struct{})
 	spec, err := container.Spec(ctx)
 	if err != nil {
 		return fmt.Errorf("failed to get the OCI runtime spec for the container: %w", err)
 	}
-
-	flagT := spec.Process.Terminal
-	var con console.Console
-
-	if flagT {
+	var (
+		opt cio.Opt
+		con console.Console
+	)
+	if spec.Process.Terminal {
 		con, err = consoleutil.Current()
 		if err != nil {
-			return fmt.Errorf("failed to get the current console: %w", err)
+			return err
 		}
 		defer con.Reset()
+
 		if _, err := term.MakeRaw(int(con.Fd())); err != nil {
 			return fmt.Errorf("failed to set the console to raw mode: %w", err)
 		}
-	}
-
-	// Get container labels for namespace
-	containerLabels, err := container.Labels(ctx)
-	if err != nil {
-		return fmt.Errorf("failed to get container labels: %w", err)
-	}
-	namespace := containerLabels[labels.Namespace]
-
-	// Use multi-session IO manager to attach to the container
-	manager := streamutil.GetGlobalManager()
-
-	// Prepare IO streams
-	var stdin io.Reader
-	var stdout, stderr io.Writer = options.Stdout, options.Stderr
-
-	if options.Stdin != nil {
-		if flagT {
-			// For TTY mode, we need detachable stdin
-			closer := func() {
-				// This will be called when detach key sequence is detected
-				log.G(ctx).Debug("Detaching from container")
+		closer := func() {
+			detachC <- struct{}{}
+			// task will be set by container.Task later.
+			//
+			// We cannot use container.Task(ctx, cio.Load) to get the IO here
+			// because the `cancel` field of the returned `*cio` is nil. [1]
+			//
+			// [1] https://github.com/containerd/containerd/blob/8f756bc8c26465bd93e78d9cd42082b66f276e10/cio/io.go#L358-L359
+			io := task.IO()
+			if io == nil {
+				log.G(ctx).Errorf("got a nil io")
+				return
 			}
-			stdin, err = consoleutil.NewDetachableStdin(con, options.DetachKeys, closer)
-			if err != nil {
-				return fmt.Errorf("failed to create detachable stdin: %w", err)
-			}
-		} else {
-			stdin = options.Stdin
+			io.Cancel()
 		}
+		var in io.Reader
+		if options.Stdin != nil {
+			in, err = consoleutil.NewDetachableStdin(con, options.DetachKeys, closer)
+			if err != nil {
+				return err
+			}
+		}
+		opt = cio.WithStreams(in, con, nil)
+	} else {
+		opt = cio.WithStreams(options.Stdin, options.Stdout, options.Stderr)
 	}
-
-	if flagT {
-		// For TTY mode, stdout and stderr are combined
-		stdout = con
-		stderr = nil
-	}
-
-	// Attach to the container's IO streams
-	clientStreams, err := manager.AttachToContainer(container.ID(), namespace, flagT, stdin, stdout, stderr)
+	task, err = container.Task(ctx, cio.NewAttach(opt))
 	if err != nil {
-		return fmt.Errorf("failed to attach to container IO: %w", err)
+		return fmt.Errorf("failed to attach to the container: %w", err)
 	}
-	defer clientStreams.Close()
-
-	// Get the existing task (container should already be running)
-	task, err := container.Task(ctx, nil)
-	if err != nil {
-		return fmt.Errorf("failed to get container task: %w", err)
-	}
-	if flagT {
-		// Handle console resize for TTY mode
+	if spec.Process.Terminal {
 		if err := consoleutil.HandleConsoleResize(ctx, task, con); err != nil {
 			log.G(ctx).WithError(err).Error("console resize")
 		}
 	}
-
-	// Forward signals to the container
 	sigC := signalutil.ForwardAllSignals(ctx, task)
 	defer signalutil.StopCatch(sigC)
 
-	// Wait for the container to exit or user to detach
+	// Wait for the container to exit.
 	statusC, err := task.Wait(ctx)
 	if err != nil {
 		return fmt.Errorf("failed to init an async wait for the container to exit: %w", err)
 	}
-
-	// Since we're using multi-session IO, we don't have a detachC channel like in the original code
-	// Instead, we'll wait for the container to exit
-	status := <-statusC
-	cStatus, err = task.Status(ctx)
-	if err != nil {
-		return err
-	}
-	code, _, err := status.Result()
-	if err != nil {
-		return err
-	}
-	if code != 0 {
-		return errutil.NewExitCoderErr(int(code))
+	select {
+	// io.Wait() would return when either 1) the user detaches from the container OR 2) the container is about to exit.
+	//
+	// If we replace the `select` block with io.Wait() and
+	// directly use task.Status() to check the status of the container after io.Wait() returns,
+	// it can still be running even though the container is about to exit (somehow especially for Windows).
+	//
+	// As a result, we need a separate detachC to distinguish from the 2 cases mentioned above.
+	case <-detachC:
+		io := task.IO()
+		if io == nil {
+			return errors.New("got a nil IO from the task")
+		}
+		io.Wait()
+	case status := <-statusC:
+		cStatus, err = task.Status(ctx)
+		if err != nil {
+			return err
+		}
+		code, _, err := status.Result()
+		if err != nil {
+			return err
+		}
+		if code != 0 {
+			return errutil.NewExitCoderErr(int(code))
+		}
 	}
 	return nil
 }
