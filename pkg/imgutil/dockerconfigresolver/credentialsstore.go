@@ -17,10 +17,12 @@
 package dockerconfigresolver
 
 import (
+	"context"
 	"errors"
 	"fmt"
 	"strings"
 
+	"github.com/containerd/log"
 	"github.com/docker/cli/cli/config"
 	"github.com/docker/cli/cli/config/configfile"
 	"github.com/docker/cli/cli/config/types"
@@ -132,7 +134,7 @@ func (cs *CredentialsStore) Retrieve(registryURL *RegistryURL, checkCredStore bo
 			returnedCredentials.ServerAddress = registryURL.Host
 		}
 	}()
-
+	log.G(context.Background()).Debugf("checkCredStore: %+v", checkCredStore)
 	if !checkCredStore {
 		return returnedCredentials, nil
 	}

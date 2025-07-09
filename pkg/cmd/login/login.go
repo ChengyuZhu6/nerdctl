@@ -17,6 +17,7 @@
 package login
 
 import (
+	"bytes"
 	"context"
 	"errors"
 	"fmt"
@@ -51,12 +52,13 @@ func Login(ctx context.Context, options types.LoginCommandOptions, stdout io.Wri
 	if err != nil {
 		return err
 	}
-
+	log.G(ctx).Debugf("credStore: %+v", credStore)
 	var responseIdentityToken string
-
+	log.G(ctx).Debugf("options.Username: %+v", options.Username)
+	log.G(ctx).Debugf("options.Password: %+v", options.Password)
 	credentials, err := credStore.Retrieve(registryURL, options.Username == "" && options.Password == "")
 	credentials.IdentityToken = ""
-
+	log.G(ctx).Debugf("credentials: %+v", credentials)
 	if err == nil && credentials.Username != "" && credentials.Password != "" {
 		responseIdentityToken, err = loginClientSide(ctx, options.GOptions, registryURL, credentials)
 	}
@@ -66,7 +68,7 @@ func Login(ctx context.Context, options types.LoginCommandOptions, stdout io.Wri
 		if err != nil {
 			return err
 		}
-
+		log.G(ctx).Debugf("after promptUserForAuthentication, credentials: %+v", credentials)
 		responseIdentityToken, err = loginClientSide(ctx, options.GOptions, registryURL, credentials)
 		if err != nil {
 			return err
@@ -145,6 +147,7 @@ func loginClientSide(ctx context.Context, globalOptions types.GlobalCommandOptio
 		return "", err
 	}
 	log.G(ctx).Debugf("len(regHosts)=%d", len(regHosts))
+	log.G(ctx).Debugf("regHosts: %+v", regHosts)
 	if len(regHosts) == 0 {
 		return "", fmt.Errorf("got empty []docker.RegistryHost for %q", host)
 	}
@@ -177,6 +180,19 @@ func tryLoginWithRegHost(ctx context.Context, rh docker.RegistryHost) error {
 		Scheme: rh.Scheme,
 		Host:   rh.Host,
 		Path:   rh.Path,
+	}
+	log.G(ctx).Debugf("u: %+v", u)
+	log.G(ctx).Debugf("rh.Authorizer: %#v", rh.Authorizer)
+
+	// Wrap the transport once to dump full HTTP request / response for debugging
+	if rh.Client != nil {
+		if _, wrapped := rh.Client.Transport.(roundTripperDebug); !wrapped {
+			baseRT := rh.Client.Transport
+			if baseRT == nil {
+				baseRT = http.DefaultTransport
+			}
+			rh.Client.Transport = roundTripperDebug{base: baseRT}
+		}
 	}
 	var ress []*http.Response
 	for i := 0; i < 10; i++ {
@@ -211,4 +227,39 @@ func tryLoginWithRegHost(ctx context.Context, rh docker.RegistryHost) error {
 	}
 
 	return errors.New("too many 401 (probably)")
+}
+
+// roundTripperDebug is a wrapper around http.RoundTripper that logs
+// the complete request & response metadata (and first 512 bytes of body)
+// to nerdctl's debug logger. It is only enabled when --debug or --debug-full
+// is active.
+type roundTripperDebug struct{ base http.RoundTripper }
+
+func (rt roundTripperDebug) RoundTrip(req *http.Request) (*http.Response, error) {
+	ctx := req.Context()
+	log.G(ctx).Debugf("[HTTP-TRACE] --> %s %s", req.Method, req.URL)
+	for k, v := range req.Header {
+		log.G(ctx).Debugf("[HTTP-TRACE] --> %s: %q", k, v)
+	}
+
+	res, err := rt.base.RoundTrip(req)
+	if err != nil {
+		log.G(ctx).WithError(err).Debug("[HTTP-TRACE] <-- transport error")
+		return res, err
+	}
+
+	log.G(ctx).Debugf("[HTTP-TRACE] <-- %s %s", res.Proto, res.Status)
+	for k, v := range res.Header {
+		log.G(ctx).Debugf("[HTTP-TRACE] <-- %s: %q", k, v)
+	}
+
+	if res.Body != nil {
+		// Peek first 512 bytes for debugging while keeping body consumable
+		var previewBuf bytes.Buffer
+		if _, _ = io.CopyN(&previewBuf, res.Body, 512); previewBuf.Len() > 0 {
+			log.G(ctx).Debugf("[HTTP-TRACE] <-- first 512B body: %q", previewBuf.String())
+		}
+		res.Body = io.NopCloser(io.MultiReader(bytes.NewReader(previewBuf.Bytes()), res.Body))
+	}
+	return res, nil
 }
