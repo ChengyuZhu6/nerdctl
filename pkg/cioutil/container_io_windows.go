@@ -17,11 +17,15 @@
 package cioutil
 
 import (
+	"context"
 	"fmt"
 	"io"
+	"net"
 	"os/exec"
+	"sync"
 
 	"github.com/Microsoft/go-winio"
+	"github.com/pkg/errors"
 
 	"github.com/containerd/containerd/v2/pkg/cio"
 	"github.com/containerd/log"
@@ -107,4 +111,142 @@ func copyIO(_ *exec.Cmd, fifos *cio.FIFOSet, ioset *cio.Streams) (_ *ncio, retEr
 	}
 
 	return ncios, nil
+}
+
+type stdioPipes struct {
+	stdin  io.WriteCloser
+	stdout io.ReadCloser
+	stderr io.ReadCloser
+}
+
+type delayedConnection struct {
+	l    net.Listener
+	con  net.Conn
+	wg   sync.WaitGroup
+	once sync.Once
+}
+
+func (dc *delayedConnection) Write(p []byte) (int, error) {
+	dc.wg.Wait()
+	if dc.con != nil {
+		return dc.con.Write(p)
+	}
+	return 0, errors.New("use of closed network connection")
+}
+
+func (dc *delayedConnection) Read(p []byte) (int, error) {
+	dc.wg.Wait()
+	if dc.con != nil {
+		return dc.con.Read(p)
+	}
+	return 0, errors.New("use of closed network connection")
+}
+
+func (dc *delayedConnection) unblockConnectionWaiters() {
+	defer dc.once.Do(func() {
+		dc.wg.Done()
+	})
+}
+
+func (dc *delayedConnection) Close() error {
+	_ = dc.l.Close()
+	if dc.con != nil {
+		return dc.con.Close()
+	}
+	dc.unblockConnectionWaiters()
+	return nil
+}
+
+func NewDirectIO(ctx context.Context, fifos *cio.FIFOSet) (*cio.DirectIO, error) {
+	pipes, err := newStdioPipes(fifos)
+	if err != nil {
+		return nil, err
+	}
+	return cio.NewDirectIOFromFIFOSet(ctx, pipes.stdin, pipes.stdout, pipes.stderr, fifos), nil
+}
+
+// newStdioPipes creates actual fifos for stdio.
+func newStdioPipes(fifos *cio.FIFOSet) (_ *stdioPipes, retErr error) {
+	p := &stdioPipes{}
+	if fifos.Stdin != "" {
+		l, err := winio.ListenPipe(fifos.Stdin, nil)
+		if err != nil {
+			return nil, errors.Wrapf(err, "failed to create stdin pipe %s", fifos.Stdin)
+		}
+		dc := &delayedConnection{
+			l: l,
+		}
+		dc.wg.Add(1)
+		defer func() {
+			if retErr != nil {
+				_ = dc.Close()
+			}
+		}()
+		p.stdin = dc
+
+		go func() {
+			conn, err := l.Accept()
+			if err != nil {
+				_ = dc.Close()
+				return
+			}
+			dc.con = conn
+			dc.unblockConnectionWaiters()
+		}()
+	}
+
+	if fifos.Stdout != "" {
+		l, err := winio.ListenPipe(fifos.Stdout, nil)
+		if err != nil {
+			return nil, errors.Wrapf(err, "failed to create stdout pipe %s", fifos.Stdout)
+		}
+		dc := &delayedConnection{
+			l: l,
+		}
+		dc.wg.Add(1)
+		defer func() {
+			if retErr != nil {
+				_ = dc.Close()
+			}
+		}()
+		p.stdout = dc
+
+		go func() {
+			conn, err := l.Accept()
+			if err != nil {
+				_ = dc.Close()
+				return
+			}
+			dc.con = conn
+			dc.unblockConnectionWaiters()
+		}()
+	}
+
+	if fifos.Stderr != "" {
+		l, err := winio.ListenPipe(fifos.Stderr, nil)
+		if err != nil {
+			return nil, errors.Wrapf(err, "failed to create stderr pipe %s", fifos.Stderr)
+		}
+		dc := &delayedConnection{
+			l: l,
+		}
+		dc.wg.Add(1)
+		defer func() {
+			if retErr != nil {
+				_ = dc.Close()
+			}
+		}()
+		p.stderr = dc
+
+		go func() {
+			conn, err := l.Accept()
+			if err != nil {
+				_ = dc.Close()
+				return
+			}
+			dc.con = conn
+			dc.unblockConnectionWaiters()
+		}()
+	}
+	return p, nil
 }

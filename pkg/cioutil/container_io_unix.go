@@ -134,3 +134,7 @@ func openFifos(ctx context.Context, fifos *cio.FIFOSet) (f pipes, retErr error) 
 	}
 	return f, nil
 }
+
+func NewDirectIO(ctx context.Context, fifos *cio.FIFOSet) (*cio.DirectIO, error) {
+	return cio.NewDirectIO(ctx, fifos)
+}

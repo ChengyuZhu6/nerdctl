@@ -33,9 +33,7 @@ import (
 	dockeropts "github.com/docker/docker/opts"
 	"github.com/moby/sys/signal"
 	"github.com/opencontainers/runtime-spec/specs-go"
-	"golang.org/x/term"
 
-	"github.com/containerd/console"
 	containerd "github.com/containerd/containerd/v2/client"
 	"github.com/containerd/containerd/v2/core/containers"
 	"github.com/containerd/containerd/v2/core/runtime/restart"
@@ -45,7 +43,6 @@ import (
 	"github.com/containerd/go-cni"
 	"github.com/containerd/log"
 
-	"github.com/containerd/nerdctl/v2/pkg/consoleutil"
 	"github.com/containerd/nerdctl/v2/pkg/errutil"
 	"github.com/containerd/nerdctl/v2/pkg/formatter"
 	"github.com/containerd/nerdctl/v2/pkg/ipcutil"
@@ -53,6 +50,7 @@ import (
 	"github.com/containerd/nerdctl/v2/pkg/labels/k8slabels"
 	"github.com/containerd/nerdctl/v2/pkg/rootlessutil"
 	"github.com/containerd/nerdctl/v2/pkg/signalutil"
+	"github.com/containerd/nerdctl/v2/pkg/streamutil"
 	"github.com/containerd/nerdctl/v2/pkg/strutil"
 	"github.com/containerd/nerdctl/v2/pkg/taskutil"
 )
@@ -227,23 +225,14 @@ func Start(ctx context.Context, container containerd.Container, isAttach bool, i
 	if err := ReconfigIPCContainer(ctx, container, client, lab); err != nil {
 		return err
 	}
+	streamutil.GetGlobalIOWrapper().NewStreamConfig(container.ID())
 
 	process, err := container.Spec(ctx)
 	if err != nil {
 		return err
 	}
 	isTerminal := process.Process.Terminal
-	var con console.Console
-	if (isInteractive || isAttach) && isTerminal {
-		con, err = consoleutil.Current()
-		if err != nil {
-			return err
-		}
-		defer con.Reset()
-		if _, err := term.MakeRaw(int(con.Fd())); err != nil {
-			return err
-		}
-	}
+	streamutil.GetGlobalIOWrapper().NewInputPipes(container.ID(), isTerminal)
 
 	logURI := lab[labels.LogURI]
 	namespace := lab[labels.Namespace]
@@ -275,7 +264,7 @@ func Start(ctx context.Context, container containerd.Container, isAttach bool, i
 		// source: https://github.com/containerd/nerdctl/blob/main/docs/command-reference.md#whale-nerdctl-start
 		attachStreamOpt = []string{"STDOUT", "STDERR"}
 	}
-	task, err := taskutil.NewTask(ctx, client, container, attachStreamOpt, isInteractive, isTerminal, true, con, logURI, detachKeys, namespace, detachC)
+	task, err := taskutil.NewTask(ctx, client, container, attachStreamOpt, isInteractive, isTerminal, true, logURI, detachKeys, namespace, detachC)
 	if err != nil {
 		return err
 	}
@@ -286,11 +275,7 @@ func Start(ctx context.Context, container containerd.Container, isAttach bool, i
 	if !isAttach {
 		return nil
 	}
-	if isAttach && isTerminal {
-		if err := consoleutil.HandleConsoleResize(ctx, task, con); err != nil {
-			log.G(ctx).WithError(err).Error("console resize")
-		}
-	}
+
 	sigc := signalutil.ForwardAllSignals(ctx, task)
 	defer signalutil.StopCatch(sigc)
 

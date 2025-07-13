@@ -24,14 +24,21 @@ import (
 	"net/url"
 	"os"
 	"os/exec"
+	"path/filepath"
 	"runtime"
+	"strings"
 	"sync"
 	"syscall"
 	"time"
 
+	containerd "github.com/containerd/containerd/v2/client"
 	"github.com/containerd/containerd/v2/cmd/containerd-shim-runc-v2/process"
 	"github.com/containerd/containerd/v2/defaults"
 	"github.com/containerd/containerd/v2/pkg/cio"
+	"github.com/containerd/log"
+	"github.com/containerd/nerdctl/v2/pkg/streamutil"
+	"github.com/containerd/nerdctl/v2/pkg/streamutil/ioutils"
+	"github.com/hashicorp/go-multierror"
 )
 
 const binaryIOProcTermTimeout = 12 * time.Second // Give logger process 10 seconds for cleanup
@@ -218,4 +225,99 @@ func NewContainerIO(namespace string, logURI string, tty bool, stdin io.Reader, 
 		}
 		return copyIO(cmd, fifos, streams)
 	}
+}
+
+func NewFIFOSet(bundleDir, processID string, isStdin, isTerminal bool) *cio.FIFOSet {
+	config := cio.Config{
+		Terminal: isTerminal,
+		Stdout:   filepath.Join(bundleDir, processID+"-stdout"),
+	}
+	paths := []string{config.Stdout}
+
+	if isStdin {
+		config.Stdin = filepath.Join(bundleDir, processID+"-stdin")
+		paths = append(paths, config.Stdin)
+	}
+	if !isTerminal {
+		config.Stderr = filepath.Join(bundleDir, processID+"-stderr")
+		paths = append(paths, config.Stderr)
+	}
+	closer := func() error {
+		for _, path := range paths {
+			if err := os.RemoveAll(path); err != nil {
+				log.G(context.TODO()).Warnf("libcontainerd: failed to remove fifo %v: %v", path, err)
+			}
+		}
+		return nil
+	}
+
+	return cio.NewFIFOSet(config, closer)
+}
+
+// createIO creates the io to be used by a process
+// This needs to get a pointer to interface as upon closure the process may not have yet been registered
+func CreateIO(containerID string, fifos *cio.FIFOSet, stdinCloseSync chan containerd.Process, attachStdio streamutil.StdioCallback) (cio.IO, error) {
+	var (
+		io  *cio.DirectIO
+		err error
+	)
+	io, err = NewDirectIO(context.Background(), fifos)
+	if err != nil {
+		return nil, err
+	}
+
+	if io.Stdin != nil {
+		var (
+			closeErr  error
+			stdinOnce sync.Once
+		)
+		pipe := io.Stdin
+		io.Stdin = ioutils.NewWriteCloserWrapper(pipe, func() error {
+			stdinOnce.Do(func() {
+				closeErr = pipe.Close()
+
+				select {
+				case p, ok := <-stdinCloseSync:
+					if !ok {
+						return
+					}
+					if err := closeStdin(context.Background(), p); err != nil {
+						if closeErr != nil {
+							closeErr = multierror.Append(closeErr, err)
+						} else {
+							// Avoid wrapping a single error in a multierror.
+							closeErr = err
+						}
+					}
+				default:
+					// The process wasn't ready. Close its stdin asynchronously.
+					go func() {
+						p, ok := <-stdinCloseSync
+						if !ok {
+							return
+						}
+						if err := closeStdin(context.Background(), p); err != nil {
+							log.G(context.Background()).WithError(err).Error("failed to close container stdin")
+						}
+					}()
+				}
+			})
+			return closeErr
+		})
+	}
+
+	rio, err := attachStdio(containerID, io)
+	if err != nil {
+		io.Cancel()
+		io.Close()
+	}
+	return rio, err
+}
+
+func closeStdin(ctx context.Context, p containerd.Process) error {
+	err := p.CloseIO(ctx, containerd.WithStdinCloser)
+	if err != nil && strings.Contains(err.Error(), "transport is closing") {
+		err = nil
+	}
+	return err
 }

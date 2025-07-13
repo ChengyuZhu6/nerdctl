@@ -69,6 +69,19 @@ func GetGlobalIOWrapper() *ContainerIOWrapper {
 	return globalIOWrapper
 }
 
+func (m *ContainerIOWrapper) NewStreamConfig(containerID string) *StreamConfig {
+	m.streams[containerID] = NewStreamConfig()
+	return m.streams[containerID]
+}
+
+func (m *ContainerIOWrapper) NewInputPipes(containerID string, isTerminal bool) {
+	if isTerminal {
+		m.streams[containerID].NewInputPipes()
+	} else {
+		m.streams[containerID].NewNopInputPipe()
+	}
+}
+
 // StdinPipe gets the stdin stream of the container
 func (m *ContainerIOWrapper) StdinPipe(containerID string) io.WriteCloser {
 	return m.streams[containerID].StdinPipe()
@@ -114,10 +127,10 @@ func (m *ContainerIOWrapper) InitializeStdio(containerID string, iop *cio.Direct
 	return &rio{IO: iop, sc: m.streams[containerID]}, nil
 }
 
-type StdioCallback func(io *cio.DirectIO) (cio.IO, error)
+type StdioCallback func(containerID string, iop *cio.DirectIO) (cio.IO, error)
 
 func attachStreamsFunc(stdout, stderr io.WriteCloser) StdioCallback {
-	return func(iop *cio.DirectIO) (cio.IO, error) {
+	return func(containerID string, iop *cio.DirectIO) (cio.IO, error) {
 		if iop.Stdin != nil {
 			iop.Stdin.Close()
 			// closing stdin shouldn't be needed here, it should never be open

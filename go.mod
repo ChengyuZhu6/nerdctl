@@ -116,7 +116,7 @@ require (
 	github.com/opencontainers/selinux v1.12.0 // indirect
 	github.com/petermattis/goid v0.0.0-20240813172612-4fcff4a6cae7 // indirect
 	github.com/philhofer/fwd v1.1.3-0.20240916144458-20a13a1f6b7c // indirect
-	github.com/pkg/errors v0.9.1 // indirect
+	github.com/pkg/errors v0.9.1
 	github.com/santhosh-tekuri/jsonschema/v6 v6.0.1 // indirect
 	github.com/sasha-s/go-deadlock v0.3.5 // indirect
 	//gomodjail:unconfined
@@ -147,5 +147,12 @@ require (
 	sigs.k8s.io/yaml v1.4.0 // indirect
 	tags.cncf.io/container-device-interface/specs-go v1.0.0 // indirect
 )
+
+require (
+	github.com/containerd/containerd v1.7.23
+	github.com/hashicorp/go-multierror v1.1.1
+)
+
+require github.com/hashicorp/errwrap v1.1.0 // indirect
 
 replace github.com/containerd/nerdctl/mod/tigron v0.0.0 => ./mod/tigron
