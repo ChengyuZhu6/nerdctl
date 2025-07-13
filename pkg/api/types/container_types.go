@@ -455,7 +455,7 @@ type ContainerWaitOptions struct {
 
 // ContainerAttachOptions specifies options for `nerdctl (container) attach`.
 type ContainerAttachOptions struct {
-	Stdin  io.Reader
+	Stdin  io.ReadCloser
 	Stdout io.Writer
 	Stderr io.Writer
 

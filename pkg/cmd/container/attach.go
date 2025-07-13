@@ -18,25 +18,26 @@ package container
 
 import (
 	"context"
-	"errors"
 	"fmt"
 	"io"
 
-	"golang.org/x/term"
-
-	"github.com/containerd/console"
 	containerd "github.com/containerd/containerd/v2/client"
-	"github.com/containerd/containerd/v2/pkg/cio"
 	"github.com/containerd/log"
 
 	"github.com/containerd/nerdctl/v2/pkg/api/types"
-	"github.com/containerd/nerdctl/v2/pkg/consoleutil"
 	"github.com/containerd/nerdctl/v2/pkg/containerutil"
-	"github.com/containerd/nerdctl/v2/pkg/errutil"
 	"github.com/containerd/nerdctl/v2/pkg/idutil/containerwalker"
 	"github.com/containerd/nerdctl/v2/pkg/labels"
-	"github.com/containerd/nerdctl/v2/pkg/signalutil"
+	"github.com/containerd/nerdctl/v2/pkg/streamutil"
 )
+
+// toReadCloser safely converts io.Reader to io.ReadCloser
+func toReadCloser(r io.Reader) io.ReadCloser {
+	if rc, ok := r.(io.ReadCloser); ok {
+		return rc
+	}
+	return io.NopCloser(r)
+}
 
 // Attach attaches stdin, stdout, and stderr to a running container.
 func Attach(ctx context.Context, client *containerd.Client, req string, options types.ContainerAttachOptions) error {
@@ -80,95 +81,75 @@ func Attach(ctx context.Context, client *containerd.Client, req string, options 
 	}()
 
 	// Attach to the container.
-	var task containerd.Task
-	detachC := make(chan struct{})
 	spec, err := container.Spec(ctx)
 	if err != nil {
 		return fmt.Errorf("failed to get the OCI runtime spec for the container: %w", err)
 	}
-	var (
-		opt cio.Opt
-		con console.Console
-	)
-	if spec.Process.Terminal {
-		con, err = consoleutil.Current()
-		if err != nil {
-			return err
-		}
-		defer con.Reset()
 
-		if _, err := term.MakeRaw(int(con.Fd())); err != nil {
-			return fmt.Errorf("failed to set the console to raw mode: %w", err)
-		}
-		closer := func() {
-			detachC <- struct{}{}
-			// task will be set by container.Task later.
-			//
-			// We cannot use container.Task(ctx, cio.Load) to get the IO here
-			// because the `cancel` field of the returned `*cio` is nil. [1]
-			//
-			// [1] https://github.com/containerd/containerd/blob/8f756bc8c26465bd93e78d9cd42082b66f276e10/cio/io.go#L358-L359
-			io := task.IO()
-			if io == nil {
-				log.G(ctx).Errorf("got a nil io")
-				return
-			}
-			io.Cancel()
-		}
-		var in io.Reader
-		if options.Stdin != nil {
-			in, err = consoleutil.NewDetachableStdin(con, options.DetachKeys, closer)
-			if err != nil {
-				return err
-			}
-		}
-		opt = cio.WithStreams(in, con, nil)
-	} else {
-		opt = cio.WithStreams(options.Stdin, options.Stdout, options.Stderr)
-	}
-	task, err = container.Task(ctx, cio.NewAttach(opt))
-	if err != nil {
-		return fmt.Errorf("failed to attach to the container: %w", err)
-	}
-	if spec.Process.Terminal {
-		if err := consoleutil.HandleConsoleResize(ctx, task, con); err != nil {
-			log.G(ctx).WithError(err).Error("console resize")
-		}
-	}
-	sigC := signalutil.ForwardAllSignals(ctx, task)
-	defer signalutil.StopCatch(sigC)
+	containerID := container.ID()
+	containerIOWrapper := streamutil.GetGlobalIOWrapper()
 
-	// Wait for the container to exit.
-	statusC, err := task.Wait(ctx)
+	cfg := streamutil.AttachConfig{
+		UseStdin:   options.Stdin != nil,
+		UseStdout:  options.Stdout != nil,
+		UseStderr:  options.Stderr != nil,
+		TTY:        spec.Process.Terminal,
+		CloseStdin: true,
+		DetachKeys: []byte(options.DetachKeys),
+	}
+
+	containerIOWrapper.AttachStreams(containerID, &cfg)
+
+	clientCtx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	defer func() {
+		<-clientCtx.Done()
+		// The client has disconnected
+		// In this case we need to close the container's output streams so that the goroutines used to copy
+		// to the client streams are unblocked and can exit.
+		if cfg.CStdout != nil {
+			cfg.CStdout.Close()
+		}
+		if cfg.CStderr != nil {
+			cfg.CStderr.Close()
+		}
+		containerLabels, err := container.Labels(ctx)
+		if err != nil {
+			log.G(ctx).WithError(err).Errorf("failed to getting container labels: %s", err)
+			return
+		}
+		rm, err := containerutil.DecodeContainerRmOptLabel(containerLabels[labels.ContainerAutoRemove])
+		if rm && cStatus.Status == containerd.Stopped {
+			RemoveContainer(ctx, container, options.GOptions, true, true, client)
+		}
+	}()
+
+	if cfg.UseStdin {
+		cfg.Stdin = toReadCloser(options.Stdin)
+	}
+	if cfg.UseStdout {
+		cfg.Stdout = options.Stdout
+	}
+	if cfg.UseStderr {
+		cfg.Stderr = options.Stderr
+	}
+
+	if cfg.Stdin != nil {
+		r, w := io.Pipe()
+		go func(stdin io.ReadCloser) {
+			io.Copy(w, stdin)
+			log.G(context.TODO()).WithFields(log.Fields{
+				"container": containerID,
+			}).Debug("Closing buffered stdin pipe")
+			w.Close()
+		}(cfg.Stdin)
+		cfg.Stdin = r
+	}
+
+	err = <-containerIOWrapper.CopyStreams(containerID, &cfg)
 	if err != nil {
-		return fmt.Errorf("failed to init an async wait for the container to exit: %w", err)
+		return fmt.Errorf("failed to copy streams: %w", err)
 	}
-	select {
-	// io.Wait() would return when either 1) the user detaches from the container OR 2) the container is about to exit.
-	//
-	// If we replace the `select` block with io.Wait() and
-	// directly use task.Status() to check the status of the container after io.Wait() returns,
-	// it can still be running even though the container is about to exit (somehow especially for Windows).
-	//
-	// As a result, we need a separate detachC to distinguish from the 2 cases mentioned above.
-	case <-detachC:
-		io := task.IO()
-		if io == nil {
-			return errors.New("got a nil IO from the task")
-		}
-		io.Wait()
-	case status := <-statusC:
-		cStatus, err = task.Status(ctx)
-		if err != nil {
-			return err
-		}
-		code, _, err := status.Result()
-		if err != nil {
-			return err
-		}
-		if code != 0 {
-			return errutil.NewExitCoderErr(int(code))
-		}
-	}
+
 	return nil
 }

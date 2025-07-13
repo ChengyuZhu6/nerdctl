@@ -89,6 +89,16 @@ func (m *ContainerIOWrapper) CloseStreams(containerID string) error {
 	return m.streams[containerID].CloseStreams()
 }
 
+// AttachStreams attaches the container's streams to the AttachConfig
+func (m *ContainerIOWrapper) AttachStreams(containerID string, cfg *AttachConfig) {
+	m.streams[containerID].AttachStreams(cfg)
+}
+
+// CopyStreams copies the container's streams to the AttachConfig
+func (m *ContainerIOWrapper) CopyStreams(containerID string, cfg *AttachConfig) <-chan error {
+	return m.streams[containerID].CopyStreams(context.Background(), cfg)
+}
+
 // InitializeStdio is called by libcontainerd to connect the stdio.
 func (m *ContainerIOWrapper) InitializeStdio(containerID string, iop *cio.DirectIO) (cio.IO, error) {
 	m.streams[containerID].CopyToPipe(iop)

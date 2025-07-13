@@ -76,10 +76,11 @@ func attachOptions(cmd *cobra.Command) (types.ContainerAttachOptions, error) {
 		return types.ContainerAttachOptions{}, err
 	}
 
-	var stdin io.Reader
+	var stdin io.ReadCloser
 	if !noStdin {
-		stdin = cmd.InOrStdin()
+		stdin = cmd.InOrStdin().(io.ReadCloser)
 	}
+
 	return types.ContainerAttachOptions{
 		GOptions:   globalOptions,
 		Stdin:      stdin,
