@@ -80,7 +80,17 @@ func inspectIdentifier(ctx context.Context, client *containerd.Client, identifie
 	}
 
 	// TODO: docker does allow retrieving images by Id, so implement as a last ditch effort (probably look-up the store)
-
+	if len(imageList) == 0 && digest != "" {
+		allImages, err := client.ImageService().List(ctx)
+		if err == nil {
+			for _, img := range allImages {
+				if strings.HasPrefix(img.Target.Digest.String(), strings.TrimSuffix(digest, ".*")) {
+					imageList = append(imageList, img)
+					break
+				}
+			}
+		}
+	}
 	// Return the list we found, along with normalized name and tag
 	return imageList, name, tag, nil
 }
