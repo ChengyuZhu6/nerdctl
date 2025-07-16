@@ -134,30 +134,29 @@ func processManifestEntry(entry *native.Manifest, rawRef string, verbose bool) *
 		if verbose {
 			// verbose is true, output complete entry
 			return entry
+		}
+		// verbose is false, decide output based on whether index is empty
+		if entry.Index != nil {
+			// index is not empty, only output Index
+			result.Index = entry.Index
 		} else {
-			// verbose is false, decide output based on whether index is empty
-			if entry.Index != nil {
-				// index is not empty, only output Index
-				result.Index = entry.Index
+			// index is empty, only output Manifest field from Manifests
+			if len(entry.Manifests) == 1 {
+				// If there's only one manifest, output it directly without the Manifests wrapper
+				result.Manifests = []native.ManifestEntry{
+					{
+						Manifest: entry.Manifests[0].Manifest,
+					},
+				}
 			} else {
-				// index is empty, only output Manifest field from Manifests
-				if len(entry.Manifests) == 1 {
-					// If there's only one manifest, output it directly without the Manifests wrapper
-					result.Manifests = []native.ManifestEntry{
-						{
-							Manifest: entry.Manifests[0].Manifest,
-						},
-					}
-				} else {
-					for _, manifestEntry := range entry.Manifests {
-						result.Manifests = append(result.Manifests, native.ManifestEntry{
-							Manifest: manifestEntry.Manifest,
-						})
-					}
+				for _, manifestEntry := range entry.Manifests {
+					result.Manifests = append(result.Manifests, native.ManifestEntry{
+						Manifest: manifestEntry.Manifest,
+					})
 				}
 			}
-			return result
 		}
+		return result
 	} else {
 		// If rawRef has digest, find matching content
 

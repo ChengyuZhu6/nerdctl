@@ -17,8 +17,9 @@
 package manifest
 
 import (
-	"github.com/containerd/nerdctl/v2/cmd/nerdctl/helpers"
 	"github.com/spf13/cobra"
+
+	"github.com/containerd/nerdctl/v2/cmd/nerdctl/helpers"
 )
 
 func Command() *cobra.Command {
