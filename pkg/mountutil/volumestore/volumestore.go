@@ -115,7 +115,11 @@ func (vs *volumeStore) Exists(name string) (doesExist bool, err error) {
 	}
 
 	// No need for a lock here, the operation is atomic
-	return vs.manager.Exists(name)
+	exists, err := vs.manager.Exists(name)
+	if err != nil {
+		return false, err
+	}
+	return exists.(bool), nil
 }
 
 // Get retrieves a native volume from the store, optionally with its size
@@ -193,7 +197,7 @@ func (vs *volumeStore) Count() (count int, err error) {
 			return err
 		}
 
-		count = len(names)
+		count = len(names.([]string))
 		return nil
 	})
 
@@ -215,7 +219,7 @@ func (vs *volumeStore) List(size bool) (res map[string]native.Volume, err error)
 			return err
 		}
 
-		for _, name := range names {
+		for _, name := range names.([]string) {
 			vol, err := vs.rawGet(name, size)
 			if err != nil {
 				log.L.WithError(err).Errorf("something is wrong with %q", name)
@@ -259,7 +263,7 @@ func (vs *volumeStore) Remove(generator func() ([]string, []error, error)) (remo
 			// Inability to delete is a hard error
 			if doesExist, err := vs.manager.Exists(name); err != nil {
 				return err
-			} else if !doesExist {
+			} else if !doesExist.(bool) {
 				// TODO: see above
 				warns = append(warns, fmt.Errorf("volume %q: %w", name, store.ErrNotFound))
 				continue
@@ -291,7 +295,7 @@ func (vs *volumeStore) Prune(filter func(vol []*native.Volume) ([]string, error)
 		}
 
 		res := []*native.Volume{}
-		for _, name := range names {
+		for _, name := range names.([]string) {
 			vol, err := vs.rawGet(name, false)
 			if err != nil {
 				log.L.WithError(err).Errorf("something is wrong with %q", name)
@@ -324,19 +328,21 @@ func (vs *volumeStore) rawGet(name string, size bool) (vol *native.Volume, err e
 
 	vol = &native.Volume{
 		Name:   name,
-		Labels: labels(content),
+		Labels: labels(content.([]byte)),
 	}
 
-	vol.Mountpoint, err = vs.manager.Location(name, dataDirName)
+	location, err := vs.manager.Location(name, dataDirName)
 	if err != nil {
 		return nil, err
 	}
+	vol.Mountpoint = location.(string)
 
 	if size {
-		vol.Size, err = vs.manager.GroupSize(name, dataDirName)
+		sizeVal, err := vs.manager.GroupSize(name, dataDirName)
 		if err != nil {
 			return nil, errors.Join(fmt.Errorf("failed reading volume size for %q", name), err)
 		}
+		vol.Size = sizeVal.(int64)
 	}
 
 	return vol, nil
@@ -359,7 +365,7 @@ func (vs *volumeStore) rawCreate(name string, labels []string) (vol *native.Volu
 
 	if doesExist, err := vs.manager.Exists(name, volumeJSONFileName); err != nil {
 		return nil, err
-	} else if !doesExist {
+	} else if !doesExist.(bool) {
 		if err = vs.manager.Set(labelsJSON, name, volumeJSONFileName); err != nil {
 			return nil, err
 		}
@@ -377,9 +383,11 @@ func (vs *volumeStore) rawCreate(name string, labels []string) (vol *native.Volu
 		return nil, err
 	}
 
-	if vol.Mountpoint, err = vs.manager.Location(name, dataDirName); err != nil {
+	location, err := vs.manager.Location(name, dataDirName)
+	if err != nil {
 		return nil, err
 	}
+	vol.Mountpoint = location.(string)
 
 	return vol, nil
 }

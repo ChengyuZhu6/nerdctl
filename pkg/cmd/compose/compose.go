@@ -86,7 +86,14 @@ func New(client *containerd.Client, globalOptions types.GlobalCommandOptions, op
 		return nil, err
 	}
 	// FIXME: this is racy. See note in up_volume.go
-	options.VolumeExists = volStore.Exists
+	options.VolumeExists = func(name string) (bool, error) {
+		var exists interface{}
+		exists, err := volStore.Exists(name)
+		if err != nil {
+			return false, err
+		}
+		return exists.(bool), nil
+	}
 
 	options.ImageExists = func(ctx context.Context, rawRef string) (bool, error) {
 		parsedReference, err := referenceutil.Parse(rawRef)

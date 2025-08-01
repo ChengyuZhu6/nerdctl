@@ -83,17 +83,17 @@ func (x *nameStore) Acquire(name, id string) (err error) {
 	}
 
 	return x.safeStore.WithLock(func() error {
-		var previousID []byte
+		var previousID interface{}
 		previousID, err = x.safeStore.Get(name)
 		if err != nil {
 			if !errors.Is(err, store.ErrNotFound) {
 				return err
 			}
-		} else if string(previousID) == "" {
+		} else if string(previousID.([]byte)) == "" {
 			// This has happened in the past, probably following some other error condition of OS restart
 			// We do warn about it, but do not hard-error and let the new container acquire the name
 			log.L.Warnf("name %q was locked by an empty id - this is abnormal and should be reported", name)
-		} else if string(previousID) != id {
+		} else if string(previousID.([]byte)) != id {
 			// If the name is already used by another container, that is a hard error
 			return fmt.Errorf("name %q is already used by ID %q", name, previousID)
 		}
@@ -119,13 +119,13 @@ func (x *nameStore) Release(name, id string) (err error) {
 	}
 
 	return x.safeStore.WithLock(func() error {
-		var content []byte
+		var content interface{}
 		content, err = x.safeStore.Get(name)
 		if err != nil {
 			return err
 		}
 
-		if string(content) != id {
+		if string(content.([]byte)) != id {
 			// Never seen this, but technically possible if downstream code is messed-up
 			return fmt.Errorf("cannot release name %q (used by ID %q, not by %q)", name, content, id)
 		}
@@ -146,19 +146,19 @@ func (x *nameStore) Rename(oldName, id, newName string) (err error) {
 	}
 
 	return x.safeStore.WithLock(func() error {
-		var doesExist bool
-		var content []byte
+		var doesExist interface{}
+		var content interface{}
 		doesExist, err = x.safeStore.Exists(newName)
 		if err != nil {
 			return err
 		}
 
-		if doesExist {
+		if doesExist.(bool) {
 			content, err = x.safeStore.Get(newName)
 			if err != nil {
 				return err
 			}
-			return fmt.Errorf("name %q is already used by ID %q", newName, string(content))
+			return fmt.Errorf("name %q is already used by ID %q", newName, string(content.([]byte)))
 		}
 
 		content, err = x.safeStore.Get(oldName)
@@ -166,7 +166,7 @@ func (x *nameStore) Rename(oldName, id, newName string) (err error) {
 			return err
 		}
 
-		if string(content) != id {
+		if string(content.([]byte)) != id {
 			return fmt.Errorf("name %q is used by ID %q, not by %q", oldName, content, id)
 		}
 

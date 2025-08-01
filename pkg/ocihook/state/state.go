@@ -106,7 +106,7 @@ func (lf *Store) Delete() (err error) {
 func (lf *Store) rawLoad() (err error) {
 	data, err := lf.safeStore.Get(lifecycleFile)
 	if err == nil {
-		err = json.Unmarshal(data, lf)
+		err = json.Unmarshal(data.([]byte), lf)
 	} else if errors.Is(err, store.ErrNotFound) {
 		err = nil
 	}

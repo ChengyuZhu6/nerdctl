@@ -54,8 +54,8 @@ var (
 // Store represents a store that is able to grant an exclusive lock (ensuring concurrency safety,
 // both between go routines and across multiple binaries invocations), and is performing atomic operations.
 // Note that Store allows manipulating nested objects:
-// - Set([]byte("mykeyvalue"), "group", "subgroup", "my key1")
-// - Set([]byte("mykeyvalue"), "group", "subgroup", "my key2")
+// - Set("mykeyvalue", "group", "subgroup", "my key1")
+// - Set("mykeyvalue", "group", "subgroup", "my key2")
 // - Get("group", "subgroup", "my key1")
 // - List("group", "subgroup")
 // Note that both Delete and Exists can be applied indifferently to specific keys, or groups.
@@ -69,25 +69,25 @@ type Manager interface {
 	// List will return a slice of all subgroups (eg: subdirectories), or keys (eg: files), under a specific group (eg: dir)
 	// Note that `key...` may be omitted, in which case, all objects' names at the root of the store are returned.
 	// Example, in the volumestore, List() will return all existing volumes names
-	List(key ...string) ([]string, error)
+	List(key ...interface{}) (interface{}, error)
 	// Exists checks that a given key exists
 	// Example: Exists("meta.json")
-	Exists(key ...string) (bool, error)
+	Exists(key ...interface{}) (interface{}, error)
 	// Get returns the content of a key
-	Get(key ...string) ([]byte, error)
+	Get(key ...interface{}) (interface{}, error)
 	// Set saves bytes to a key
-	Set(data []byte, key ...string) error
+	Set(data interface{}, key ...interface{}) error
 	// Delete removes a key or a group
-	Delete(key ...string) error
+	Delete(key ...interface{}) error
 	// Location returns the absolute path to a certain resource
 	// Note that this technically "leaks" (filesystem) implementation details up.
 	// It is necessary though when we are going to pass these filepath to containerd for eg.
-	Location(key ...string) (string, error)
+	Location(key ...interface{}) (interface{}, error)
 
 	// GroupSize will return the combined size of all objects stored under the group (eg: dir)
-	GroupSize(key ...string) (int64, error)
+	GroupSize(key ...interface{}) (interface{}, error)
 	// GroupEnsure ensures that a given group (eg: directory) exists
-	GroupEnsure(key ...string) error
+	GroupEnsure(key ...interface{}) error
 }
 
 // Locker describes a locking mechanism that can be used to encapsulate operations in a safe way

@@ -107,17 +107,18 @@ func (x *hostsStore) Acquire(meta Meta) (err error) {
 	}()
 
 	return x.safeStore.WithLock(func() error {
-		var loc string
+		var loc interface{}
 		loc, err = x.safeStore.Location(meta.ID, hostsFile)
 		if err != nil {
 			return err
 		}
+		locStr := loc.(string)
 
 		// See https://github.com/containerd/nerdctl/issues/3907
 		// Because of the way we call network manager ContainerNetworkingOpts then SetupNetworking in sequence
 		// we need to make sure we do not overwrite an already allocated hosts file.
-		if _, err = os.Stat(loc); os.IsNotExist(err) {
-			if err = filesystem.WriteFile(loc, []byte{}, 0o644); err != nil {
+		if _, err = os.Stat(locStr); os.IsNotExist(err) {
+			if err = filesystem.WriteFile(locStr, []byte{}, 0o644); err != nil {
 				return errors.Join(store.ErrSystemFailure, err)
 			}
 
@@ -125,7 +126,7 @@ func (x *hostsStore) Acquire(meta Meta) (err error) {
 			// against the current process umask.
 			// See https://www.man7.org/linux/man-pages/man2/open.2.html for details.
 			// Since we must make sure that these files are world readable, explicitly chmod them here.
-			if err = os.Chmod(loc, 0o644); err != nil {
+			if err = os.Chmod(locStr, 0o644); err != nil {
 				err = errors.Join(store.ErrSystemFailure, err)
 			}
 		}
@@ -180,13 +181,14 @@ func (x *hostsStore) AllocHostsFile(id string, content []byte) (location string,
 			return err
 		}
 
-		var loc string
+		var loc interface{}
 		loc, err = x.safeStore.Location(id, hostsFile)
 		if err != nil {
 			return err
 		}
+		locStr := loc.(string)
 
-		err = filesystem.WriteFile(loc, content, 0o644)
+		err = filesystem.WriteFile(locStr, content, 0o644)
 		if err != nil {
 			err = errors.Join(store.ErrSystemFailure, err)
 		}
@@ -195,7 +197,7 @@ func (x *hostsStore) AllocHostsFile(id string, content []byte) (location string,
 		// against the current process umask.
 		// See https://www.man7.org/linux/man-pages/man2/open.2.html for details.
 		// Since we must make sure that these files are world readable, explicitly chmod them here.
-		if err = os.Chmod(loc, 0o644); err != nil {
+		if err = os.Chmod(locStr, 0o644); err != nil {
 			err = errors.Join(store.ErrSystemFailure, err)
 		}
 
@@ -205,7 +207,11 @@ func (x *hostsStore) AllocHostsFile(id string, content []byte) (location string,
 		return "", err
 	}
 
-	return x.safeStore.Location(id, hostsFile)
+	loc, err := x.safeStore.Location(id, hostsFile)
+	if err != nil {
+		return "", err
+	}
+	return loc.(string), nil
 }
 
 func (x *hostsStore) Delete(id string) (err error) {
@@ -224,7 +230,11 @@ func (x *hostsStore) HostsPath(id string) (location string, err error) {
 		}
 	}()
 
-	return x.safeStore.Location(id, hostsFile)
+	loc, err := x.safeStore.Location(id, hostsFile)
+	if err != nil {
+		return "", err
+	}
+	return loc.(string), nil
 }
 
 func (x *hostsStore) Update(id, newName string) (err error) {
@@ -235,23 +245,23 @@ func (x *hostsStore) Update(id, newName string) (err error) {
 	}()
 
 	return x.safeStore.WithLock(func() error {
-		var content []byte
+		var content interface{}
 		if content, err = x.safeStore.Get(id, metaJSON); err != nil {
 			return err
 		}
 
 		meta := &Meta{}
-		if err = json.Unmarshal(content, meta); err != nil {
+		if err = json.Unmarshal(content.([]byte), meta); err != nil {
 			return err
 		}
 
 		meta.Name = newName
-		content, err = json.Marshal(meta)
+		contentBytes, err := json.Marshal(meta)
 		if err != nil {
 			return err
 		}
 
-		if err = x.safeStore.Set(content, id, metaJSON); err != nil {
+		if err = x.safeStore.Set(contentBytes, id, metaJSON); err != nil {
 			return err
 		}
 
@@ -270,15 +280,15 @@ func (x *hostsStore) updateAllHosts() (err error) {
 	networkNameByIP := map[string]string{}
 
 	// Phase 1: read all meta files
-	for _, entry := range entries {
-		var content []byte
+	for _, entry := range entries.([]string) {
+		var content interface{}
 		content, err = x.safeStore.Get(entry, metaJSON)
 		if err != nil {
 			log.L.WithError(err).Debugf("unable to read %q", entry)
 			continue
 		}
 		meta := &Meta{}
-		if err = json.Unmarshal(content, meta); err != nil {
+		if err = json.Unmarshal(content.([]byte), meta); err != nil {
 			log.L.WithError(err).Warnf("unable to unmarshell %q", entry)
 			continue
 		}
@@ -299,7 +309,7 @@ func (x *hostsStore) updateAllHosts() (err error) {
 	}
 
 	// Phase 2: write hosts files
-	for _, entry := range entries {
+	for _, entry := range entries.([]string) {
 		myMeta, ok := metasByEntry[entry]
 		if !ok {
 			log.L.WithError(errdefs.ErrNotFound).Debugf("hostsstore metadata %q not found in %q?", metaJSON, entry)
@@ -311,7 +321,7 @@ func (x *hostsStore) updateAllHosts() (err error) {
 			myNetworks[nwName] = struct{}{}
 		}
 
-		var content []byte
+		var content interface{}
 		content, err = x.safeStore.Get(entry, hostsFile)
 		if err != nil {
 			log.L.WithError(err).Errorf("unable to retrieve the hosts file for %q", entry)
@@ -322,7 +332,7 @@ func (x *hostsStore) updateAllHosts() (err error) {
 		// retain custom /etc/hosts entries outside <nerdctl> </nerdctl> region
 		var buf bytes.Buffer
 		if content != nil {
-			if err = parseHostsButSkipMarkedRegion(&buf, bytes.NewReader(content)); err != nil {
+			if err = parseHostsButSkipMarkedRegion(&buf, bytes.NewReader(content.([]byte))); err != nil {
 				log.L.WithError(err).Errorf("failed to read hosts file for %q", entry)
 				continue
 			}
@@ -346,17 +356,18 @@ func (x *hostsStore) updateAllHosts() (err error) {
 
 		buf.WriteString(fmt.Sprintf("# %s\n", MarkerEnd))
 
-		var loc string
+		var loc interface{}
 		loc, err = x.safeStore.Location(entry, hostsFile)
 		if err != nil {
 			return err
 		}
+		locStr := loc.(string)
 
-		err = filesystem.WriteFile(loc, buf.Bytes(), 0o644)
+		err = filesystem.WriteFile(locStr, buf.Bytes(), 0o644)
 		if err != nil {
 			log.L.WithError(err).Errorf("failed to write hosts file for %q", entry)
 		}
-		_ = os.Chmod(loc, 0o644)
+		_ = os.Chmod(locStr, 0o644)
 	}
 	return nil
 }

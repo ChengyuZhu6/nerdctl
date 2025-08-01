@@ -53,12 +53,12 @@ func TestFileStoreBasics(t *testing.T) {
 
 	doesExist, err := tempStore.Exists("nonexistent")
 	assert.NilError(t, err, "exist should not error")
-	assert.Assert(t, !doesExist, "should not exist")
+	assert.Assert(t, !doesExist.(bool), "should not exist")
 
 	// Listing empty store
 	result, err := tempStore.List()
 	assert.NilError(t, err, "listing store root should succeed")
-	assert.Assert(t, len(result) == 0, "list empty store return zero length slice")
+	assert.Assert(t, len(result.([]string)) == 0, "list empty store return zero length slice")
 
 	// Invalid keys
 	_, err = tempStore.Get("..")
@@ -79,31 +79,31 @@ func TestFileStoreBasics(t *testing.T) {
 
 	doesExist, err = tempStore.Exists("something")
 	assert.NilError(t, err, "exist should not error")
-	assert.Assert(t, doesExist, "should exist")
+	assert.Assert(t, doesExist.(bool), "should exist")
 
 	data, err := tempStore.Get("something")
 	assert.NilError(t, err, "read should be successful")
-	assert.Assert(t, string(data) == "foo", "written data should be read back")
+	assert.Assert(t, string(data.([]byte)) == "foo", "written data should be read back")
 
 	result, err = tempStore.List()
 	assert.NilError(t, err, "listing store root should succeed")
-	assert.Assert(t, len(result) == 1, "list store with one element should return it")
+	assert.Assert(t, len(result.([]string)) == 1, "list store with one element should return it")
 
 	// Read from the list key obtained
-	data, err = tempStore.Get(result[0])
+	data, err = tempStore.Get(result.([]string)[0])
 	assert.NilError(t, err, "read should be successful")
-	assert.Assert(t, string(data) == "foo", "written data should be read back")
+	assert.Assert(t, string(data.([]byte)) == "foo", "written data should be read back")
 
 	err = tempStore.Delete("something")
 	assert.NilError(t, err, "delete should be successful")
 
 	doesExist, err = tempStore.Exists("something")
 	assert.NilError(t, err, "exist should not error")
-	assert.Assert(t, !doesExist, "should not exist")
+	assert.Assert(t, !doesExist.(bool), "should not exist")
 
 	result, err = tempStore.List()
 	assert.NilError(t, err, "listing store root should succeed")
-	assert.Assert(t, len(result) == 0, "list store should return it empty slice")
+	assert.Assert(t, len(result.([]string)) == 0, "list store should return it empty slice")
 }
 
 func TestFileStoreGroups(t *testing.T) {
@@ -121,44 +121,44 @@ func TestFileStoreGroups(t *testing.T) {
 
 	doesExist, err := tempStore.Exists("group", "subgroup", "actualkey")
 	assert.NilError(t, err, "exist should not error")
-	assert.Assert(t, doesExist, "should exist")
+	assert.Assert(t, doesExist.(bool), "should exist")
 
 	data, err := tempStore.Get("group", "subgroup", "actualkey")
 	assert.NilError(t, err, "read should be successful")
-	assert.Assert(t, string(data) == "foo", "written data should be read back")
+	assert.Assert(t, string(data.([]byte)) == "foo", "written data should be read back")
 
 	result, err := tempStore.List()
 	assert.NilError(t, err, "listing store root should succeed")
-	assert.Assert(t, len(result) == 1)
-	assert.Assert(t, result[0] == "group")
+	assert.Assert(t, len(result.([]string)) == 1)
+	assert.Assert(t, result.([]string)[0] == "group")
 
 	result, err = tempStore.List("group")
 	assert.NilError(t, err, "listing store root should succeed")
-	assert.Assert(t, len(result) == 1)
-	assert.Assert(t, result[0] == "subgroup")
+	assert.Assert(t, len(result.([]string)) == 1)
+	assert.Assert(t, result.([]string)[0] == "subgroup")
 
 	result, err = tempStore.List("group", "subgroup")
 	assert.NilError(t, err, "listing store root should succeed")
-	assert.Assert(t, len(result) == 1)
-	assert.Assert(t, result[0] == "actualkey")
+	assert.Assert(t, len(result.([]string)) == 1)
+	assert.Assert(t, result.([]string)[0] == "actualkey")
 
 	err = tempStore.Delete("group", "subgroup", "actualkey")
 	assert.NilError(t, err, "delete should be successful")
 
 	doesExist, err = tempStore.Exists("group", "subgroup", "actualkey")
 	assert.NilError(t, err, "exist should not error")
-	assert.Assert(t, !doesExist, "should not exist")
+	assert.Assert(t, !doesExist.(bool), "should not exist")
 
 	doesExist, err = tempStore.Exists("group", "subgroup")
 	assert.NilError(t, err, "exist should not error")
-	assert.Assert(t, doesExist, "should exist")
+	assert.Assert(t, doesExist.(bool), "should exist")
 
 	err = tempStore.Delete("group", "subgroup")
 	assert.NilError(t, err, "delete should be successful")
 
 	doesExist, err = tempStore.Exists("group", "subgroup")
 	assert.NilError(t, err, "exist should not error")
-	assert.Assert(t, !doesExist, "should not exist")
+	assert.Assert(t, !doesExist.(bool), "should not exist")
 
 }
 
@@ -176,7 +176,7 @@ func TestFileStoreConcurrent(t *testing.T) {
 			time.Sleep(1 * time.Second)
 			result, err := tempStore.Get("concurrentkey")
 			assert.NilError(t, err, "reading should not error")
-			assert.Assert(t, string(result) == "routine 1")
+			assert.Assert(t, string(result.([]byte)) == "routine 1")
 			return nil
 		})
 		assert.NilError(t, lErr, "locking should not error")
@@ -190,7 +190,7 @@ func TestFileStoreConcurrent(t *testing.T) {
 			time.Sleep(1 * time.Second)
 			result, err := tempStore.Get("concurrentkey")
 			assert.NilError(t, err, "reading should not error")
-			assert.Assert(t, string(result) == "routine 2")
+			assert.Assert(t, string(result.([]byte)) == "routine 2")
 			return nil
 		})
 		assert.NilError(t, lErr, "locking should not error")
@@ -202,7 +202,7 @@ func TestFileStoreConcurrent(t *testing.T) {
 		time.Sleep(1 * time.Second)
 		result, err := tempStore.Get("concurrentkey")
 		assert.NilError(t, err, "reading should not error")
-		assert.Assert(t, string(result) == "main routine 1")
+		assert.Assert(t, string(result.([]byte)) == "main routine 1")
 		return nil
 	})
 	assert.NilError(t, lErr, "locking should not error")
@@ -215,7 +215,7 @@ func TestFileStoreConcurrent(t *testing.T) {
 		time.Sleep(1 * time.Second)
 		result, err := tempStore.Get("concurrentkey")
 		assert.NilError(t, err, "reading should not error")
-		assert.Assert(t, string(result) == "main routine 2")
+		assert.Assert(t, string(result.([]byte)) == "main routine 2")
 		return nil
 	})
 	assert.NilError(t, lErr, "locking should not error")

@@ -91,7 +91,7 @@ func (ns *NetworkStore) Load() (err error) {
 
 	return ns.safeStore.WithLock(func() error {
 		doesExist, err := ns.safeStore.Exists(networkConfigName)
-		if err != nil || !doesExist {
+		if err != nil || !doesExist.(bool) {
 			return err
 		}
 
@@ -104,7 +104,7 @@ func (ns *NetworkStore) Load() (err error) {
 		}
 
 		var netConf NetworkConfig
-		if err := json.Unmarshal(data, &netConf); err != nil {
+		if err := json.Unmarshal(data.([]byte), &netConf); err != nil {
 			return fmt.Errorf("failed to parse network config %v: %w", netConf, err)
 		}
 		ns.NetConf = netConf
