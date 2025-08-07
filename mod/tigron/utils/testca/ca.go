@@ -146,13 +146,14 @@ func createCert(
 		caCert = template
 	}
 
-	signedCert, err := x509.CreateCertificate(rand.Reader, template, caCert, &key.PublicKey, caKey)
-	assertive.ErrorIsNil(testing, err, "certificate creation should succeed")
-
 	serial := template.SerialNumber
 	if serial == nil {
 		serial = serialNumber()
+		template.SerialNumber = serial
 	}
+
+	signedCert, err := x509.CreateCertificate(rand.Reader, template, caCert, &key.PublicKey, caKey)
+	assertive.ErrorIsNil(testing, err, "certificate creation should succeed")
 
 	data.Temp().Dir(dir)
 
