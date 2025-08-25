@@ -57,8 +57,8 @@ func Pull(ctx context.Context, client *containerd.Client, ref string, config *Co
 
 	go func() {
 		if config.ProgressOutput != nil {
-			// no progress bar, because it hides some debug logs
-			jobs.ShowProgress(pctx, ongoing, client.ContentStore(), config.ProgressOutput)
+			// Use Docker-like progress display by default
+			jobs.ShowProgressWithStyle(pctx, ongoing, client.ContentStore(), config.ProgressOutput, true)
 		}
 		close(progress)
 	}()
