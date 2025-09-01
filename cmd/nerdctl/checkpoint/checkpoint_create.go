@@ -17,8 +17,6 @@
 package checkpoint
 
 import (
-	"fmt"
-
 	"github.com/containerd/nerdctl/v2/cmd/nerdctl/completion"
 	"github.com/containerd/nerdctl/v2/cmd/nerdctl/helpers"
 	"github.com/containerd/nerdctl/v2/pkg/api/types"
@@ -48,7 +46,6 @@ func processCreateFlags(cmd *cobra.Command) (types.CheckpointCreateOptions, erro
 	}
 
 	leaveRunning, err := cmd.Flags().GetBool("leave-running")
-	fmt.Println("leaveRunning", leaveRunning)
 	if err != nil {
 		return types.CheckpointCreateOptions{}, err
 	}
