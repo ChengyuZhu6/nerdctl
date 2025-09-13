@@ -66,6 +66,7 @@ func Create(ctx context.Context, client *containerd.Client, containerID string, 
 
 	img, err := container.Checkpoint(ctx, checkpointName, opts...)
 	if err != nil {
+		fmt.Fprintf(options.Stdout, "DEBUG: container.Checkpoint failed: %v\n", err)
 		return err
 	}
 
@@ -80,11 +81,13 @@ func Create(ctx context.Context, client *containerd.Client, containerID string, 
 
 	rawIndex, err := content.ReadBlob(ctx, cs, img.Target())
 	if err != nil {
+		fmt.Fprintf(options.Stdout, "DEBUG: content.ReadBlob failed: %v\n", err)
 		return errdefs.System(errors.Wrapf(err, "failed to retrieve checkpoint data"))
 	}
 
 	var index ocispec.Index
 	if err := json.Unmarshal(rawIndex, &index); err != nil {
+		fmt.Fprintf(options.Stdout, "DEBUG: json.Unmarshal failed: %v\n", err)
 		return errdefs.System(errors.Wrapf(err, "failed to decode checkpoint data"))
 	}
 
@@ -96,22 +99,26 @@ func Create(ctx context.Context, client *containerd.Client, containerID string, 
 		}
 	}
 	if cpDesc == nil {
+		fmt.Fprintf(options.Stdout, "DEBUG: no checkpoint descriptor found\n")
 		return errdefs.System(errors.Wrapf(err, "invalid checkpoint"))
 	}
 
 	targetPath := filepath.Join(options.CheckpointDir, checkpointName)
 	if err := os.MkdirAll(targetPath, 0o700); err != nil {
+		fmt.Fprintf(options.Stdout, "DEBUG: os.MkdirAll failed: %v\n", err)
 		return err
 	}
 
 	rat, err := cs.ReaderAt(ctx, *cpDesc)
 	if err != nil {
+		fmt.Fprintf(options.Stdout, "DEBUG: cs.ReaderAt failed: %v\n", err)
 		return errdefs.System(errors.Wrapf(err, "failed to get checkpoint reader"))
 	}
 	defer rat.Close()
 
 	_, err = archive.Apply(ctx, targetPath, content.NewReader(rat))
 	if err != nil {
+		fmt.Fprintf(options.Stdout, "DEBUG: archive.Apply failed: %v\n", err)
 		return errdefs.System(errors.Wrapf(err, "failed to read checkpoint reader"))
 	}
 
