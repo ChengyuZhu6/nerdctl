@@ -70,9 +70,9 @@ func Create(ctx context.Context, client *containerd.Client, containerID string, 
 	}
 
 	defer func() {
-		err := client.ImageService().Delete(ctx, img.Name())
-		if err != nil {
-			fmt.Fprintf(options.Stdout, "failed to delete checkpoint image: %v\n", err)
+		deleteErr := client.ImageService().Delete(ctx, img.Name())
+		if deleteErr != nil {
+			fmt.Fprintf(options.Stdout, "failed to delete checkpoint image: %v\n", deleteErr)
 		}
 	}()
 
@@ -116,11 +116,6 @@ func Create(ctx context.Context, client *containerd.Client, containerID string, 
 	}
 
 	fmt.Fprintf(options.Stdout, "%s\n", checkpointName)
-
-	// Ensure output is flushed, especially important when WithCheckpointTaskExit is used
-	if f, ok := options.Stdout.(*os.File); ok {
-		f.Sync()
-	}
 
 	return nil
 }
