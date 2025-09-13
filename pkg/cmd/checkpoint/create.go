@@ -91,6 +91,12 @@ func Create(ctx context.Context, client *containerd.Client, containerID string, 
 		return errdefs.System(errors.Wrapf(err, "failed to decode checkpoint data"))
 	}
 
+	fmt.Fprintf(options.Stdout, "DEBUG: index has %d manifests\n", len(index.Manifests))
+	for i, m := range index.Manifests {
+		fmt.Fprintf(options.Stdout, "DEBUG: manifest[%d] MediaType: %s\n", i, m.MediaType)
+	}
+	fmt.Fprintf(options.Stdout, "DEBUG: looking for MediaType: %s\n", images.MediaTypeContainerd1Checkpoint)
+
 	var cpDesc *ocispec.Descriptor
 	for _, m := range index.Manifests {
 		if m.MediaType == images.MediaTypeContainerd1Checkpoint {
