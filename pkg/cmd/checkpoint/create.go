@@ -100,7 +100,7 @@ func Create(ctx context.Context, client *containerd.Client, containerID string, 
 	}
 	if cpDesc == nil {
 		fmt.Fprintf(options.Stdout, "DEBUG: no checkpoint descriptor found\n")
-		return errdefs.System(errors.Wrapf(err, "invalid checkpoint"))
+		return errdefs.System(errors.New("invalid checkpoint"))
 	}
 
 	targetPath := filepath.Join(options.CheckpointDir, checkpointName)
