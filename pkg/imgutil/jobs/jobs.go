@@ -223,6 +223,7 @@ const (
 	StatusDownloading StatusInfoStatus = "downloading"
 	StatusUploading   StatusInfoStatus = "uploading"
 	StatusExists      StatusInfoStatus = "exists"
+	StatusConverting  StatusInfoStatus = "converting"
 )
 
 // StatusInfo holds the status info for an upload or download.
@@ -243,16 +244,23 @@ func Display(w io.Writer, statuses []StatusInfo, start time.Time) {
 	for _, status := range statuses {
 		total += status.Offset
 		switch status.Status {
-		case StatusDownloading, StatusUploading:
+		case StatusDownloading, StatusUploading, StatusConverting:
 			var bar progress.Bar
 			if status.Total > 0.0 {
 				bar = progress.Bar(float64(status.Offset) / float64(status.Total))
+				fmt.Fprintf(w, "%s:\t%s\t%40r\t%8.8s/%s\t\n",
+					status.Ref,
+					status.Status,
+					bar,
+					progress.Bytes(status.Offset), progress.Bytes(status.Total))
+			} else {
+				bar = progress.Bar(0.0)
+				fmt.Fprintf(w, "%s:\t%s\t%40r\t%8.8s\t\n",
+					status.Ref,
+					status.Status,
+					bar,
+					progress.Bytes(status.Offset))
 			}
-			fmt.Fprintf(w, "%s:\t%s\t%40r\t%8.8s/%s\t\n",
-				status.Ref,
-				status.Status,
-				bar,
-				progress.Bytes(status.Offset), progress.Bytes(status.Total))
 		case StatusResolving, StatusWaiting:
 			bar := progress.Bar(0.0)
 			fmt.Fprintf(w, "%s:\t%s\t%40r\t\n",

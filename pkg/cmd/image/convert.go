@@ -24,8 +24,11 @@ import (
 	"io"
 	"os"
 	"strings"
+	"text/tabwriter"
+	"time"
 
 	"github.com/klauspost/compress/zstd"
+	godigest "github.com/opencontainers/go-digest"
 	ocispec "github.com/opencontainers/image-spec/specs-go/v1"
 
 	overlaybdconvert "github.com/containerd/accelerated-container-image/pkg/convertor"
@@ -43,9 +46,11 @@ import (
 	"github.com/containerd/stargz-snapshotter/recorder"
 	estargzdecompressutil "github.com/containerd/stargz-snapshotter/util/decompressutil"
 
+	"github.com/containerd/containerd/v2/pkg/progress"
 	"github.com/containerd/nerdctl/v2/pkg/api/types"
 	"github.com/containerd/nerdctl/v2/pkg/clientutil"
 	converterutil "github.com/containerd/nerdctl/v2/pkg/imgutil/converter"
+	"github.com/containerd/nerdctl/v2/pkg/imgutil/jobs"
 	"github.com/containerd/nerdctl/v2/pkg/platformutil"
 	"github.com/containerd/nerdctl/v2/pkg/referenceutil"
 	"github.com/containerd/nerdctl/v2/pkg/snapshotterutil"
@@ -82,6 +87,113 @@ func Convert(ctx context.Context, client *containerd.Client, srcRawRef, targetRa
 	if err != nil {
 		return err
 	}
+
+	preRefPrefix := "Convert: "
+
+	var preRefs []string
+	if preRefPrefix != "" {
+		is := client.ImageService()
+		imgMeta, err := is.Get(ctx, srcRef)
+		if err == nil {
+			descs, err := platformutil.LayerDescs(ctx, client.ContentStore(), imgMeta.Target, platMC)
+			if err == nil {
+				for _, d := range descs {
+					preRefs = append(preRefs, preRefPrefix+d.Digest.String())
+				}
+			}
+		}
+	}
+
+	// Start progress rendering to stderr while conversion is running
+	pctx, stopProgress := context.WithCancel(ctx)
+	doneCh := make(chan struct{})
+	go func(pre []string) {
+		defer close(doneCh)
+		ticker := time.NewTicker(100 * time.Millisecond)
+		defer ticker.Stop()
+		fw := progress.NewWriter(os.Stderr)
+		start := time.Now()
+		statuses := map[string]jobs.StatusInfo{}
+		order := []string{}
+		cs := client.ContentStore()
+		for _, ref := range pre {
+			order = append(order, ref)
+			st := jobs.StatusInfo{Ref: ref, Status: jobs.StatusWaiting}
+			if idx := strings.Index(ref, "sha256:"); idx >= 0 {
+				if dgst, err := godigest.Parse(ref[idx:]); err == nil {
+					if _, err := cs.Info(pctx, dgst); err == nil {
+						st.Status = jobs.StatusExists
+					}
+				}
+			}
+			statuses[ref] = st
+		}
+		for {
+			select {
+			case <-ticker.C:
+				fw.Flush()
+				tw := tabwriter.NewWriter(fw, 1, 8, 1, ' ', 0)
+				active, err := cs.ListStatuses(pctx, "")
+				if err == nil {
+					activeSeen := map[string]struct{}{}
+					for _, a := range active {
+						activeSeen[a.Ref] = struct{}{}
+						if _, ok := statuses[a.Ref]; !ok {
+							order = append(order, a.Ref)
+						}
+						total := a.Total
+						if total == 0 {
+							if idx := strings.Index(a.Ref, "sha256:"); idx >= 0 {
+								if dgst, err := godigest.Parse(a.Ref[idx:]); err == nil {
+									if info, err := cs.Info(pctx, dgst); err == nil {
+										total = info.Size
+									}
+								}
+							}
+						}
+						statuses[a.Ref] = jobs.StatusInfo{
+							Ref:       a.Ref,
+							Status:    jobs.StatusConverting,
+							Offset:    a.Offset,
+							Total:     total,
+							StartedAt: a.StartedAt,
+							UpdatedAt: a.UpdatedAt,
+						}
+					}
+
+					for ref, st := range statuses {
+						if _, ok := activeSeen[ref]; ok {
+							continue
+						}
+						idx := strings.Index(ref, "sha256:")
+						if idx >= 0 {
+							if dgst, err := godigest.Parse(ref[idx:]); err == nil {
+								if info, err := cs.Info(pctx, dgst); err == nil {
+									st.Status = jobs.StatusDone
+									st.Offset = info.Size
+									st.Total = info.Size
+									st.UpdatedAt = info.CreatedAt
+									statuses[ref] = st
+								}
+							}
+						}
+					}
+
+					var ordered []jobs.StatusInfo
+					for _, k := range order {
+						if s, ok := statuses[k]; ok {
+							ordered = append(ordered, s)
+						}
+					}
+					jobs.Display(tw, ordered, start)
+					tw.Flush()
+				}
+			case <-pctx.Done():
+				fw.Flush()
+				return
+			}
+		}
+	}(preRefs)
 
 	estargz := options.Estargz
 	zstd := options.Zstd
@@ -208,8 +320,12 @@ func Convert(ctx context.Context, client *containerd.Client, srcRawRef, targetRa
 	// converter.Convert() gains the lease by itself
 	newImg, err := converterutil.Convert(ctx, client, targetRef, srcRef, convertOpts...)
 	if err != nil {
+		stopProgress()
+		<-doneCh
 		return err
 	}
+	stopProgress()
+	<-doneCh
 	res := converterutil.ConvertedImageInfo{
 		Image: newImg.Name + "@" + newImg.Target.Digest.String(),
 	}
