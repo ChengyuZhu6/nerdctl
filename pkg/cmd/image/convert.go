@@ -91,6 +91,7 @@ func Convert(ctx context.Context, client *containerd.Client, srcRawRef, targetRa
 	preRefPrefix := "Convert: "
 
 	var preRefs []string
+	allowedDigests := map[string]struct{}{}
 	if preRefPrefix != "" {
 		is := client.ImageService()
 		imgMeta, err := is.Get(ctx, srcRef)
@@ -98,16 +99,21 @@ func Convert(ctx context.Context, client *containerd.Client, srcRawRef, targetRa
 			descs, err := platformutil.LayerDescs(ctx, client.ContentStore(), imgMeta.Target, platMC)
 			if err == nil {
 				for _, d := range descs {
-					preRefs = append(preRefs, preRefPrefix+d.Digest.String())
+					dg := d.Digest.String()
+					preRefs = append(preRefs, preRefPrefix+dg)
+					allowedDigests[dg] = struct{}{}
 				}
 			}
 		}
 	}
 
+	// Limit visible refs to this conversion only
+	allowedPrefixes := []string{"Convert:"}
+
 	// Start progress rendering to stderr while conversion is running
 	pctx, stopProgress := context.WithCancel(ctx)
 	doneCh := make(chan struct{})
-	go func(pre []string) {
+	go func(pre []string, digestAllow map[string]struct{}, prefixAllow []string) {
 		defer close(doneCh)
 		ticker := time.NewTicker(100 * time.Millisecond)
 		defer ticker.Stop()
@@ -116,6 +122,23 @@ func Convert(ctx context.Context, client *containerd.Client, srcRawRef, targetRa
 		statuses := map[string]jobs.StatusInfo{}
 		order := []string{}
 		cs := client.ContentStore()
+
+		// helpers
+		hasAllowedPrefix := func(ref string) bool {
+			for _, p := range prefixAllow {
+				if strings.HasPrefix(ref, p) {
+					return true
+				}
+			}
+			return false
+		}
+		extractDigest := func(ref string) string {
+			idx := strings.Index(ref, "sha256:")
+			if idx < 0 {
+				return ""
+			}
+			return ref[idx:]
+		}
 		for _, ref := range pre {
 			order = append(order, ref)
 			st := jobs.StatusInfo{Ref: ref, Status: jobs.StatusWaiting}
@@ -137,14 +160,24 @@ func Convert(ctx context.Context, client *containerd.Client, srcRawRef, targetRa
 				if err == nil {
 					activeSeen := map[string]struct{}{}
 					for _, a := range active {
+						if !hasAllowedPrefix(a.Ref) {
+							continue
+						}
+						if da := extractDigest(a.Ref); da != "" {
+							if len(digestAllow) > 0 {
+								if _, ok := digestAllow[da]; !ok {
+									continue
+								}
+							}
+						}
 						activeSeen[a.Ref] = struct{}{}
 						if _, ok := statuses[a.Ref]; !ok {
 							order = append(order, a.Ref)
 						}
 						total := a.Total
 						if total == 0 {
-							if idx := strings.Index(a.Ref, "sha256:"); idx >= 0 {
-								if dgst, err := godigest.Parse(a.Ref[idx:]); err == nil {
+							if dg := extractDigest(a.Ref); dg != "" {
+								if dgst, err := godigest.Parse(dg); err == nil {
 									if info, err := cs.Info(pctx, dgst); err == nil {
 										total = info.Size
 									}
@@ -165,9 +198,8 @@ func Convert(ctx context.Context, client *containerd.Client, srcRawRef, targetRa
 						if _, ok := activeSeen[ref]; ok {
 							continue
 						}
-						idx := strings.Index(ref, "sha256:")
-						if idx >= 0 {
-							if dgst, err := godigest.Parse(ref[idx:]); err == nil {
+						if dg := extractDigest(ref); dg != "" {
+							if dgst, err := godigest.Parse(dg); err == nil {
 								if info, err := cs.Info(pctx, dgst); err == nil {
 									st.Status = jobs.StatusDone
 									st.Offset = info.Size
@@ -193,7 +225,7 @@ func Convert(ctx context.Context, client *containerd.Client, srcRawRef, targetRa
 				return
 			}
 		}
-	}(preRefs)
+	}(preRefs, allowedDigests, allowedPrefixes)
 
 	estargz := options.Estargz
 	zstd := options.Zstd
