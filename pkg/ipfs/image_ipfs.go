@@ -70,22 +70,11 @@ func EnsureImage(ctx context.Context, client *containerd.Client, scheme, ref, ip
 	if options.Mode == "never" {
 		return nil, fmt.Errorf("image %q is not available", ref)
 	}
-	r, err := ipfs.NewResolver(ipfs.ResolverOptions{
-		Scheme:   scheme,
-		IPFSPath: lookupIPFSPath(ipfsPath),
-	})
-	if err != nil {
-		return nil, err
-	}
-	return imgutil.PullImage(ctx, client, r, ref, options)
+	log.G(ctx).Debug("Using Transfer Service for IPFS pull")
+	return PullImageWithTransfer(ctx, client, scheme, ref, ipfsPath, options)
 }
 
-// Push pushes the specified image to IPFS.
 func Push(ctx context.Context, client *containerd.Client, rawRef string, layerConvert converter.ConvertFunc, allPlatforms bool, platform []string, ensureImage bool, ipfsPath string) (string, error) {
-	platMC, err := platformutil.NewMatchComparer(allPlatforms, platform)
-	if err != nil {
-		return "", err
-	}
 	ipath := lookupIPFSPath(ipfsPath)
 	if ensureImage {
 		// Ensure image contents are fully downloaded
@@ -94,7 +83,16 @@ func Push(ctx context.Context, client *containerd.Client, rawRef string, layerCo
 			log.G(ctx).WithError(err).Warnf("failed to ensure the existence of image %q", rawRef)
 		}
 	}
-	return ipfs.PushWithIPFSPath(ctx, client, rawRef, layerConvert, platMC, &ipath)
+
+	log.G(ctx).Debug("Using Transfer Service for IPFS push")
+
+	options := types.ImagePushOptions{
+		AllPlatforms: allPlatforms,
+		Platforms:    platform,
+		Quiet:        false,
+	}
+
+	return PushImageWithTransfer(ctx, client, rawRef, ipath, options)
 }
 
 // ensureContentsOfIPFSImage ensures that the entire contents of an existing IPFS image are fully downloaded to containerd.
