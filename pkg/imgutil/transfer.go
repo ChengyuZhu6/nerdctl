@@ -23,6 +23,14 @@ import (
 )
 
 func ensureImageWithTransfer(ctx context.Context, client *containerd.Client, parsedReference *referenceutil.ImageReference, rawRef string, options types.ImagePullOptions) (*EnsuredImage, error) {
+	registryOpts, err := NewRegistryOpts(ctx, parsedReference.Domain, options.GOptions)
+	if err != nil {
+		return nil, err
+	}
+	return PullImageWithTransfer(ctx, client, parsedReference, rawRef, options, registryOpts)
+}
+
+func PullImageWithTransfer(ctx context.Context, client *containerd.Client, parsedReference *referenceutil.ImageReference, rawRef string, options types.ImagePullOptions, registryOpts []registry.Opt) (*EnsuredImage, error) {
 	storeOpts, unpackEnabled, err := buildTransferStoreOptions(ctx, parsedReference, options)
 	if err != nil {
 		return nil, err
@@ -33,8 +41,13 @@ func ensureImageWithTransfer(ctx context.Context, client *containerd.Client, par
 	if options.ProgressOutputToStdout {
 		progressWriter = options.Stdout
 	}
+
 	transferErr := executeTransferWithRetry(ctx, client, parsedReference, options.GOptions, options.Quiet, progressWriter, func(plainHTTP bool) (interface{}, interface{}, error) {
-		fetcher, err := newDockerRegistry(ctx, parsedReference, options.GOptions, plainHTTP)
+		opts := append([]registry.Opt{}, registryOpts...)
+		if plainHTTP {
+			opts = append(opts, registry.WithDefaultScheme("http"))
+		}
+		fetcher, err := registry.NewOCIRegistry(ctx, parsedReference.String(), opts...)
 		return fetcher, store, err
 	})
 	if transferErr != nil {
@@ -72,6 +85,14 @@ func ensureImageWithTransfer(ctx context.Context, client *containerd.Client, par
 }
 
 func PushWithTransfer(ctx context.Context, client *containerd.Client, parsedReference *referenceutil.ImageReference, pushRef, rawRef string, options types.ImagePushOptions) error {
+	registryOpts, err := NewRegistryOpts(ctx, parsedReference.Domain, options.GOptions)
+	if err != nil {
+		return err
+	}
+	return PushImageWithTransfer(ctx, client, parsedReference, pushRef, rawRef, options, registryOpts)
+}
+
+func PushImageWithTransfer(ctx context.Context, client *containerd.Client, parsedReference *referenceutil.ImageReference, pushRef, rawRef string, options types.ImagePushOptions, registryOpts []registry.Opt) error {
 	platformsSlice, err := platformutil.NewOCISpecPlatformSlice(options.AllPlatforms, options.Platforms)
 	if err != nil {
 		return err
@@ -89,7 +110,11 @@ func PushWithTransfer(ctx context.Context, client *containerd.Client, parsedRefe
 	}
 
 	transferErr := executeTransferWithRetry(ctx, client, parsedReference, options.GOptions, options.Quiet, progressWriter, func(plainHTTP bool) (interface{}, interface{}, error) {
-		pusher, err := newDockerRegistry(ctx, parsedReference, options.GOptions, plainHTTP)
+		opts := append([]registry.Opt{}, registryOpts...)
+		if plainHTTP {
+			opts = append(opts, registry.WithDefaultScheme("http"))
+		}
+		pusher, err := registry.NewOCIRegistry(ctx, parsedReference.String(), opts...)
 		return source, pusher, err
 	})
 	if transferErr != nil {
@@ -163,8 +188,8 @@ func executeTransferWithRetry(ctx context.Context, client *containerd.Client, pa
 	return transferErr
 }
 
-func newDockerRegistry(ctx context.Context, parsedReference *referenceutil.ImageReference, gOptions types.GlobalCommandOptions, plainHTTP bool) (interface{}, error) {
-	ch, err := dockerconfigresolver.NewCredentialHelper(parsedReference.Domain)
+func NewRegistryOpts(ctx context.Context, domain string, gOptions types.GlobalCommandOptions) ([]registry.Opt, error) {
+	ch, err := dockerconfigresolver.NewCredentialHelper(domain)
 	if err != nil {
 		return nil, err
 	}
@@ -177,9 +202,5 @@ func newDockerRegistry(ctx context.Context, parsedReference *referenceutil.Image
 		opts = append(opts, registry.WithHostDir(gOptions.HostsDir[0]))
 	}
 
-	if plainHTTP || gOptions.InsecureRegistry {
-		opts = append(opts, registry.WithDefaultScheme("http"))
-	}
-
-	return registry.NewOCIRegistry(ctx, parsedReference.String(), opts...)
+	return opts, nil
 }
