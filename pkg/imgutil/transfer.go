@@ -44,7 +44,16 @@ func prepareImageStore(ctx context.Context, parsedReference *referenceutil.Image
 	return transferimage.NewStore(parsedReference.String(), storeOpts...), nil
 }
 
-func createOCIRegistry(ctx context.Context, parsedReference *referenceutil.ImageReference, gOptions types.GlobalCommandOptions, plainHTTP bool) (*registry.OCIRegistry, error) {
+// createOCIRegistry creates an OCIRegistry with proper configuration for insecure registries
+// When insecure-registry is enabled, it uses a custom implementation that properly handles TLS
+func createOCIRegistry(ctx context.Context, parsedReference *referenceutil.ImageReference, gOptions types.GlobalCommandOptions, plainHTTP bool) (transfer.ImageFetcher, error) {
+	// Use custom registry implementation when insecure-registry is enabled
+	// This allows us to properly configure TLS settings
+	if gOptions.InsecureRegistry {
+		return NewCustomOCIRegistry(ctx, parsedReference, gOptions, plainHTTP)
+	}
+
+	// For secure registries, use the standard registry.NewOCIRegistry
 	ch, err := dockerconfigresolver.NewCredentialHelper(parsedReference.Domain)
 	if err != nil {
 		return nil, err
@@ -58,9 +67,13 @@ func createOCIRegistry(ctx context.Context, parsedReference *referenceutil.Image
 		opts = append(opts, registry.WithHostDir(gOptions.HostsDir[0]))
 	}
 
-	if isLocalHost, err := docker.MatchLocalhost(parsedReference.Domain); err != nil {
+	// Determine if this is a localhost registry
+	isLocalHost, err := docker.MatchLocalhost(parsedReference.Domain)
+	if err != nil {
 		return nil, err
-	} else if isLocalHost || plainHTTP {
+	}
+
+	if isLocalHost || plainHTTP {
 		opts = append(opts, registry.WithDefaultScheme("http"))
 	}
 
