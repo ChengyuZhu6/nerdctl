@@ -2,10 +2,8 @@ package imgutil
 
 import (
 	"context"
-	"errors"
 	"fmt"
 	"io"
-	"net/http"
 
 	containerd "github.com/containerd/containerd/v2/client"
 	"github.com/containerd/containerd/v2/core/remotes/docker"
@@ -17,6 +15,7 @@ import (
 	"github.com/containerd/nerdctl/v2/pkg/api/types"
 	"github.com/containerd/nerdctl/v2/pkg/errutil"
 	"github.com/containerd/nerdctl/v2/pkg/imgutil/dockerconfigresolver"
+	"github.com/containerd/nerdctl/v2/pkg/imgutil/nondist"
 	"github.com/containerd/nerdctl/v2/pkg/platformutil"
 	"github.com/containerd/nerdctl/v2/pkg/referenceutil"
 	"github.com/containerd/nerdctl/v2/pkg/transferutil"
@@ -140,8 +139,31 @@ func preparePushStore(pushRef string, options types.ImagePushOptions) (*transfer
 	return transferimage.NewStore(pushRef, storeOpts...), nil
 }
 
+func preparePushStoreWithFilter(ctx context.Context, client *containerd.Client, pushRef string, options types.ImagePushOptions) (*transferimage.Store, error) {
+	platformsSlice, err := platformutil.NewOCISpecPlatformSlice(options.AllPlatforms, options.Platforms)
+	if err != nil {
+		return nil, err
+	}
+
+	storeOpts := []transferimage.StoreOpt{}
+	if len(platformsSlice) > 0 {
+		storeOpts = append(storeOpts, transferimage.WithPlatforms(platformsSlice...))
+	}
+
+	// Log if we're filtering non-distributable blobs
+	if !options.AllowNondistributableArtifacts {
+		if err := nondist.WalkManifestAndFilter(ctx, client, pushRef, options.AllowNondistributableArtifacts); err != nil {
+			log.G(ctx).WithError(err).Warn("Failed to check for non-distributable blobs")
+		}
+	}
+
+	// Create image store for transfer
+	return nondist.NewFilteredImageStore(pushRef, options.AllowNondistributableArtifacts, storeOpts...), nil
+}
+
 func PushImageWithTransfer(ctx context.Context, client *containerd.Client, parsedReference *referenceutil.ImageReference, pushRef, rawRef string, options types.ImagePushOptions) error {
-	source, err := preparePushStore(pushRef, options)
+	// Use filtered image store to handle non-distributable blobs
+	source, err := preparePushStoreWithFilter(ctx, client, pushRef, options)
 	if err != nil {
 		return err
 	}
@@ -158,9 +180,9 @@ func PushImageWithTransfer(ctx context.Context, client *containerd.Client, parse
 
 	transferErr := doTransfer(ctx, client, source, pusher, options.Quiet, progressWriter)
 
-	if transferErr != nil && (errors.Is(transferErr, http.ErrSchemeMismatch) || errutil.IsErrConnectionRefused(transferErr)) {
+	if transferErr != nil && errutil.IsErrHTTPSFallbackNeeded(transferErr) {
 		if options.GOptions.InsecureRegistry {
-			log.G(ctx).WithError(err).Warnf("server %q does not seem to support HTTPS, falling back to plain HTTP", parsedReference.Domain)
+			log.G(ctx).WithError(transferErr).Warnf("server %q does not seem to support HTTPS, falling back to plain HTTP", parsedReference.Domain)
 			pusher, err = createOCIRegistry(ctx, parsedReference, options.GOptions, true)
 			if err != nil {
 				return err
