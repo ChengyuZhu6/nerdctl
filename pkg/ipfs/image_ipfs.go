@@ -70,14 +70,13 @@ func EnsureImage(ctx context.Context, client *containerd.Client, scheme, ref, ip
 	if options.Mode == "never" {
 		return nil, fmt.Errorf("image %q is not available", ref)
 	}
-	r, err := ipfs.NewResolver(ipfs.ResolverOptions{
-		Scheme:   scheme,
-		IPFSPath: lookupIPFSPath(ipfsPath),
-	})
-	if err != nil {
-		return nil, err
+
+	// Set IPFS-specific options
+	if ipfsPath != "" {
+		options.IPFSAddress = lookupIPFSPath(ipfsPath)
 	}
-	return imgutil.PullImage(ctx, client, r, ref, options)
+
+	return imgutil.EnsureImage(ctx, client, ref, options)
 }
 
 // Push pushes the specified image to IPFS.
