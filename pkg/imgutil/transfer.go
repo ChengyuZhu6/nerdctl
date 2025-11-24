@@ -21,6 +21,7 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"net"
 	"net/http"
 	"os"
 
@@ -91,7 +92,12 @@ func createOCIRegistry(ctx context.Context, parsedReference *referenceutil.Image
 		opts = append(opts, registry.WithHostDir(gOptions.HostsDir[0]))
 	}
 
-	if isLocalHost, err := docker.MatchLocalhost(parsedReference.Domain); err != nil {
+	hostname, _, err := net.SplitHostPort(parsedReference.Domain)
+	if err != nil {
+		hostname = parsedReference.Domain
+	}
+
+	if isLocalHost, err := docker.MatchLocalhost(hostname); err != nil {
 		cleanup()
 		return nil, nil, err
 	} else if isLocalHost || plainHTTP {
@@ -136,6 +142,7 @@ func PullImageWithTransfer(ctx context.Context, client *containerd.Client, parse
 			defer cleanup2()
 			transferErr = doTransfer(ctx, client, fetcher, store, options.Quiet, progressWriter)
 		}
+		log.G(ctx).Info("Hint: you may want to try --insecure-registry to allow plain HTTP (if you are in a trusted network)")
 	}
 
 	if transferErr != nil {
