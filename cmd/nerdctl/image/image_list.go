@@ -66,6 +66,7 @@ Properties:
 	cmd.Flags().Bool("digests", false, "Show digests (compatible with Docker, unlike ID)")
 	cmd.Flags().Bool("names", false, "Show image names")
 	cmd.Flags().BoolP("all", "a", true, "(unimplemented yet, always true)")
+	cmd.Flags().Bool("tree", false, "List multi-platform images as a tree (EXPERIMENTAL)")
 
 	return cmd
 }
@@ -110,6 +111,10 @@ func listOptions(cmd *cobra.Command, args []string) (*types.ImageListOptions, er
 	if err != nil {
 		return nil, err
 	}
+	tree, err := cmd.Flags().GetBool("tree")
+	if err != nil {
+		return nil, err
+	}
 	return &types.ImageListOptions{
 		GOptions:         globalOptions,
 		Quiet:            quiet,
@@ -120,6 +125,7 @@ func listOptions(cmd *cobra.Command, args []string) (*types.ImageListOptions, er
 		Digests:          digests,
 		Names:            names,
 		All:              true,
+		Tree:             tree,
 		Stdout:           cmd.OutOrStdout(),
 	}, nil
 

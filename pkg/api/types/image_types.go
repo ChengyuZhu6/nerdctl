@@ -43,6 +43,8 @@ type ImageListOptions struct {
 	Names bool
 	// All (unimplemented yet, always true)
 	All bool
+	// Tree lists multi-platform images as a tree.
+	Tree bool
 }
 
 // ImageConvertOptions specifies options for `nerdctl image convert`.

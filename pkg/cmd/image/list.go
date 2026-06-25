@@ -170,6 +170,15 @@ func printImages(ctx context.Context, client *containerd.Client, imageList []ima
 	} else {
 		finalImageList = imageList
 	}
+	if options.Tree {
+		if options.Quiet {
+			return errors.New("tree and quiet must not be specified together")
+		}
+		if options.Format != "" {
+			return errors.New("tree and format must not be specified together")
+		}
+		return printImageTree(ctx, client, finalImageList, options)
+	}
 	digestsFlag := options.Digests
 	if options.Format == "wide" {
 		digestsFlag = true
@@ -237,10 +246,156 @@ type imagePrinter struct {
 }
 
 type image struct {
-	blobSize int64
-	size     int64
-	platform platforms.Platform
-	config   *ocispec.Descriptor
+	blobSize       int64
+	size           int64
+	platform       platforms.Platform
+	config         *ocispec.Descriptor
+	manifestDigest digest.Digest
+}
+
+type imageTreeRow struct {
+	name        string
+	id          string
+	diskUsage   string
+	contentSize string
+	children    []imageTreeChild
+	created     time.Time
+}
+
+type imageTreeChild struct {
+	platform    string
+	id          string
+	diskUsage   string
+	contentSize string
+	size        int64
+	blobSize    int64
+}
+
+func printImageTree(ctx context.Context, client *containerd.Client, imageList []images.Image, options *types.ImageListOptions) error {
+	w := tabwriter.NewWriter(options.Stdout, 4, 8, 4, ' ', 0)
+	printer := &imagePrinter{
+		noTrunc:     options.NoTrunc,
+		namesFlag:   options.Names,
+		client:      client,
+		provider:    containerdutil.NewProvider(client),
+		snapshotter: containerdutil.SnapshotService(client, options.GOptions.Snapshotter),
+	}
+
+	rowsByDigest := make(map[digest.Digest]*imageTreeRow)
+	var rows []*imageTreeRow
+	for _, img := range imageList {
+		row, ok := rowsByDigest[img.Target.Digest]
+		if !ok {
+			row = &imageTreeRow{
+				id:      formatImageTreeID(img.Target.Digest.String(), options.NoTrunc),
+				created: img.CreatedAt,
+			}
+			rowsByDigest[img.Target.Digest] = row
+			rows = append(rows, row)
+		}
+		name := imageTreeName(img, options.Names)
+		if row.name == "" {
+			row.name = name
+		} else {
+			row.name += "\n" + name
+		}
+		if img.CreatedAt.After(row.created) {
+			row.created = img.CreatedAt
+		}
+	}
+
+	for _, img := range imageList {
+		row := rowsByDigest[img.Target.Digest]
+		if len(row.children) > 0 || row.diskUsage != "" {
+			continue
+		}
+		candidateImages, err := read(ctx, printer.provider, printer.snapshotter, img.Target)
+		if err != nil {
+			log.G(ctx).Warn(err)
+			continue
+		}
+		children := make([]imageTreeChild, 0, len(candidateImages))
+		var totalSize, totalBlobSize int64
+		for _, desc := range candidateImages {
+			totalSize += desc.size
+			totalBlobSize += desc.blobSize
+			if images.IsIndexType(img.Target.MediaType) {
+				children = append(children, imageTreeChild{
+					platform:    platforms.FormatAll(desc.platform),
+					id:          formatImageTreeID(desc.manifestDigest.String(), options.NoTrunc),
+					diskUsage:   units.HumanSize(float64(desc.size)),
+					contentSize: units.HumanSize(float64(desc.blobSize)),
+					size:        desc.size,
+					blobSize:    desc.blobSize,
+				})
+			}
+		}
+		sort.Slice(children, func(i, j int) bool {
+			if children[i].size != children[j].size {
+				return children[i].size > children[j].size
+			}
+			if children[i].blobSize != children[j].blobSize {
+				return children[i].blobSize > children[j].blobSize
+			}
+			return children[i].platform < children[j].platform
+		})
+		row.children = children
+		row.diskUsage = units.HumanSize(float64(totalSize))
+		row.contentSize = units.HumanSize(float64(totalBlobSize))
+	}
+
+	sort.Slice(rows, func(i, j int) bool {
+		return rows[i].created.After(rows[j].created)
+	})
+
+	fmt.Fprintln(w, "IMAGE\tID\tDISK USAGE\tCONTENT SIZE\tIN USE")
+	for rowIndex, row := range rows {
+		for nameIndex, name := range strings.Split(row.name, "\n") {
+			if nameIndex == 0 {
+				fmt.Fprintf(w, "%s\t%s\t%s\t%s\t\n", name, row.id, row.diskUsage, row.contentSize)
+				continue
+			}
+			fmt.Fprintf(w, "%s\t\t\t\t\n", name)
+		}
+		for i, child := range row.children {
+			prefix := "├─ "
+			if i == len(row.children)-1 {
+				prefix = "└─ "
+			}
+			fmt.Fprintf(w, "%s%s\t%s\t%s\t%s\t\n", prefix, child.platform, child.id, child.diskUsage, child.contentSize)
+		}
+		if rowIndex != len(rows)-1 {
+			fmt.Fprintln(w)
+		}
+	}
+	return w.Flush()
+}
+
+func imageTreeName(img images.Image, namesFlag bool) string {
+	if namesFlag {
+		return img.Name
+	}
+	repository, tag := imgutil.ParseRepoTag(img.Name)
+	if repository == "" && tag == "" {
+		return img.Name
+	}
+	if tag == "" {
+		tag = "<none>"
+	}
+	return repository + ":" + tag
+}
+
+func formatImageTreeID(id string, noTrunc bool) string {
+	if noTrunc {
+		return id
+	}
+	if strings.Contains(id, ":") {
+		id = strings.SplitN(id, ":", 2)[1]
+	}
+	if len(id) > 12 {
+		return id[:12]
+	}
+	return id
 }
 
 func readManifest(ctx context.Context, provider content.Provider, snapshotter snapshots.Snapshotter, desc ocispec.Descriptor) (*image, error) {
@@ -288,10 +443,11 @@ func readManifest(ctx context.Context, provider content.Provider, snapshotter sn
 	}
 
 	return &image{
-		blobSize: blobSize,
-		size:     size,
-		platform: plt,
-		config:   &manifest.Config,
+		blobSize:       blobSize,
+		size:           size,
+		platform:       plt,
+		config:         &manifest.Config,
+		manifestDigest: desc.Digest,
 	}, nil
 }
 
